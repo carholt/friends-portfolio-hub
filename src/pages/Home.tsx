@@ -1,0 +1,92 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import AppLayout from "@/components/AppLayout";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import CreatePortfolioDialog from "@/components/CreatePortfolioDialog";
+import { Import } from "lucide-react";
+
+export default function HomePage() {
+  const navigate = useNavigate();
+  const [summary, setSummary] = useState({ total: 0, change: null as number | null, date: null as string | null });
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+
+  useEffect(() => {
+    const loadSummary = async () => {
+      setLoading(true);
+      const { data: values } = await supabase
+        .from("portfolio_valuations")
+        .select("portfolio_id,total_value,as_of_date")
+        .order("as_of_date", { ascending: false });
+
+      const latestByPortfolio = new Map<string, { value: number; date: string }>();
+      const firstByPortfolio = new Map<string, number>();
+
+      for (const row of values || []) {
+        if (!latestByPortfolio.has(row.portfolio_id)) {
+          latestByPortfolio.set(row.portfolio_id, { value: Number(row.total_value), date: row.as_of_date });
+        }
+      }
+      for (const row of [...(values || [])].reverse()) {
+        firstByPortfolio.set(row.portfolio_id, Number(row.total_value));
+      }
+
+      let total = 0;
+      let baseTotal = 0;
+      let latestDate: string | null = null;
+      for (const [portfolioId, latest] of latestByPortfolio.entries()) {
+        total += latest.value;
+        baseTotal += firstByPortfolio.get(portfolioId) ?? latest.value;
+        if (!latestDate || latest.date > latestDate) latestDate = latest.date;
+      }
+
+      setSummary({
+        total,
+        change: latestByPortfolio.size > 0 ? total - baseTotal : null,
+        date: latestDate,
+      });
+      setLoading(false);
+    };
+    loadSummary();
+  }, []);
+
+  const changeText = useMemo(() => {
+    if (summary.change == null) return "No return data yet";
+    const sign = summary.change >= 0 ? "+" : "";
+    return `${sign}${summary.change.toLocaleString()} this period`;
+  }, [summary.change]);
+
+  return (
+    <AppLayout>
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle>Your summary</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {loading ? (
+            <p className="text-muted-foreground">Loading…</p>
+          ) : (
+            <>
+              <div>
+                <p className="text-3xl font-bold">{summary.total.toLocaleString()} SEK</p>
+                <p className="text-sm text-muted-foreground">{changeText}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Last price update: {summary.date ? new Date(summary.date).toLocaleDateString() : "No prices yet"}
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button onClick={() => setShowCreate(true)}>Create portfolio</Button>
+                <Button variant="outline" onClick={() => navigate("/portfolios?import=1")} className="gap-2">
+                  <Import className="h-4 w-4" /> Import portfolio
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+      <CreatePortfolioDialog open={showCreate} onOpenChange={setShowCreate} onCreated={() => navigate("/portfolios")} />
+    </AppLayout>
+  );
+}

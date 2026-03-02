@@ -33,7 +33,7 @@ export default function ResetPassword() {
       toast.error(error.message);
     } else {
       toast.success("Lösenordet har uppdaterats!");
-      navigate("/dashboard");
+      navigate("/home");
     }
     setLoading(false);
   };

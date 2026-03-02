@@ -26,8 +26,10 @@ export function convertCurrency(amount: number, from: string, to: string): { val
 }
 
 export function exportToCSV(portfolioName: string, holdings: any[]): void {
-  const headers = ["portfolio_name", "symbol", "asset_type", "exchange", "quantity", "avg_cost", "cost_currency"];
+  const exportedAt = new Date().toISOString();
+  const headers = ["exported_at", "portfolio_name", "symbol", "asset_type", "exchange", "quantity", "avg_cost", "cost_currency"];
   const rows = holdings.map((h) => [
+    exportedAt,
     portfolioName,
     h.asset?.symbol ?? "",
     h.asset?.asset_type ?? "",

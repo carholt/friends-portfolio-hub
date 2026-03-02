@@ -11,7 +11,7 @@ export default function Landing() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!loading && user) navigate("/dashboard");
+    if (!loading && user) navigate("/home");
   }, [user, loading, navigate]);
 
   const features = [
