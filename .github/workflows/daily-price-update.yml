@@ -9,13 +9,25 @@ jobs:
   update-prices:
     runs-on: ubuntu-latest
     steps:
-      - name: Call Supabase Edge Function
+      - name: Trigger Supabase Edge Function
         env:
           SUPABASE_FUNCTION_URL: ${{ secrets.SUPABASE_FUNCTION_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          curl -sS -X POST "$SUPABASE_FUNCTION_URL/update-prices" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            --data '{}' \
-            --fail
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_FUNCTION_URL}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY}" ]; then
+            echo "Missing required secrets: SUPABASE_FUNCTION_URL and/or SUPABASE_SERVICE_ROLE_KEY"
+            exit 1
+          fi
+
+          endpoint="${SUPABASE_FUNCTION_URL%/}/update-prices"
+          echo "Calling ${endpoint}"
+
+          response=$(curl --silent --show-error --fail \
+            --request POST "${endpoint}" \
+            --header "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            --header "Content-Type: application/json" \
+            --data '{}')
+
+          echo "Edge function response: ${response}"

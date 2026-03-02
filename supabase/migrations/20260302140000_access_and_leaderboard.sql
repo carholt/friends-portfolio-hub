@@ -1,14 +1,14 @@
--- Centralized access helper to keep visibility checks consistent in SQL and RLS-aware queries
+-- Centralized access helper to keep visibility checks consistent in SQL and RLS-aware queries.
 CREATE OR REPLACE FUNCTION public.can_access_portfolio(_portfolio_id UUID)
 RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = public
-AS $$
+AS $function$
   SELECT EXISTS (
     SELECT 1
-    FROM public.portfolios p
+    FROM public.portfolios AS p
     WHERE p.id = _portfolio_id
       AND (
         p.owner_user_id = auth.uid()
@@ -21,7 +21,7 @@ AS $$
         )
       )
   );
-$$;
+$function$;
 
 CREATE OR REPLACE FUNCTION public.can_view_portfolio(_portfolio_id UUID)
 RETURNS BOOLEAN
@@ -29,9 +29,9 @@ LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = public
-AS $$
+AS $function$
   SELECT public.can_access_portfolio(_portfolio_id);
-$$;
+$function$;
 
 -- Server-side leaderboard over accessible portfolios only.
 CREATE OR REPLACE FUNCTION public.get_leaderboard(_period TEXT DEFAULT 'ALL')
@@ -50,19 +50,24 @@ LANGUAGE sql
 STABLE
 SECURITY INVOKER
 SET search_path = public
-AS $$
+AS $function$
   WITH params AS (
-    SELECT CASE _period
-      WHEN '1M' THEN (CURRENT_DATE - INTERVAL '1 month')::date
-      WHEN '3M' THEN (CURRENT_DATE - INTERVAL '3 months')::date
-      WHEN 'YTD' THEN make_date(EXTRACT(year FROM CURRENT_DATE)::int, 1, 1)
-      WHEN '1Y' THEN (CURRENT_DATE - INTERVAL '1 year')::date
-      ELSE DATE '2000-01-01'
-    END AS period_start
+    SELECT
+      CASE _period
+        WHEN '1M' THEN (CURRENT_DATE - INTERVAL '1 month')::DATE
+        WHEN '3M' THEN (CURRENT_DATE - INTERVAL '3 months')::DATE
+        WHEN 'YTD' THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::INT, 1, 1)
+        WHEN '1Y' THEN (CURRENT_DATE - INTERVAL '1 year')::DATE
+        ELSE DATE '2000-01-01'
+      END AS period_start
   ),
   accessible AS (
-    SELECT p.id, p.name, p.visibility, p.owner_user_id
-    FROM public.portfolios p
+    SELECT
+      p.id,
+      p.name,
+      p.visibility,
+      p.owner_user_id
+    FROM public.portfolios AS p
     WHERE public.can_access_portfolio(p.id)
   ),
   valuation_points AS (
@@ -70,7 +75,7 @@ AS $$
       a.id AS portfolio_id,
       (
         SELECT v.total_value
-        FROM public.portfolio_valuations v, params
+        FROM public.portfolio_valuations AS v, params
         WHERE v.portfolio_id = a.id
           AND v.as_of_date >= params.period_start
         ORDER BY v.as_of_date ASC
@@ -78,26 +83,26 @@ AS $$
       ) AS period_start_value,
       (
         SELECT v.total_value
-        FROM public.portfolio_valuations v
+        FROM public.portfolio_valuations AS v
         WHERE v.portfolio_id = a.id
         ORDER BY v.as_of_date ASC
         LIMIT 1
       ) AS first_ever_value,
       (
         SELECT v.total_value
-        FROM public.portfolio_valuations v
+        FROM public.portfolio_valuations AS v
         WHERE v.portfolio_id = a.id
         ORDER BY v.as_of_date DESC
         LIMIT 1
       ) AS latest_value,
       (
         SELECT v.as_of_date
-        FROM public.portfolio_valuations v
+        FROM public.portfolio_valuations AS v
         WHERE v.portfolio_id = a.id
         ORDER BY v.as_of_date DESC
         LIMIT 1
       ) AS latest_date
-    FROM accessible a
+    FROM accessible AS a
   )
   SELECT
     a.id AS portfolio_id,
@@ -111,15 +116,19 @@ AS $$
       ELSE vp.latest_value - COALESCE(vp.period_start_value, vp.first_ever_value)
     END AS return_abs,
     CASE
-      WHEN COALESCE(vp.period_start_value, vp.first_ever_value) > 0 AND vp.latest_value IS NOT NULL THEN
-        ((vp.latest_value - COALESCE(vp.period_start_value, vp.first_ever_value))
-          / COALESCE(vp.period_start_value, vp.first_ever_value)) * 100
+      WHEN COALESCE(vp.period_start_value, vp.first_ever_value) > 0
+        AND vp.latest_value IS NOT NULL
+      THEN (
+        (
+          vp.latest_value - COALESCE(vp.period_start_value, vp.first_ever_value)
+        ) / COALESCE(vp.period_start_value, vp.first_ever_value)
+      ) * 100
       ELSE NULL
     END AS return_pct,
     vp.latest_date AS last_updated
-  FROM accessible a
-  LEFT JOIN valuation_points vp ON vp.portfolio_id = a.id
-  LEFT JOIN public.profiles pr ON pr.user_id = a.owner_user_id
+  FROM accessible AS a
+  LEFT JOIN valuation_points AS vp ON vp.portfolio_id = a.id
+  LEFT JOIN public.profiles AS pr ON pr.user_id = a.owner_user_id
   WHERE vp.latest_value IS NOT NULL
   ORDER BY return_pct DESC NULLS LAST, return_abs DESC NULLS LAST;
-$$;
+$function$;
