@@ -11,6 +11,7 @@ import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import PortfolioDetail from "./pages/PortfolioDetail";
+import PublicPortfolio from "./pages/PublicPortfolio";
 import Leaderboard from "./pages/Leaderboard";
 import Groups from "./pages/Groups";
 import SettingsPage from "./pages/Settings";
@@ -40,6 +41,7 @@ const App = () => (
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/portfolio/:id" element={<ProtectedRoute><PortfolioDetail /></ProtectedRoute>} />
+            <Route path="/p/:slug" element={<PublicPortfolio />} />
             <Route path="/leaderboard" element={<ProtectedRoute><Leaderboard /></ProtectedRoute>} />
             <Route path="/groups" element={<ProtectedRoute><Groups /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
