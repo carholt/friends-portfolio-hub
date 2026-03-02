@@ -150,6 +150,7 @@ export default function Groups() {
             <Users className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">Inga grupper ännu</h3>
             <p className="text-muted-foreground mb-4">Skapa en grupp och bjud in dina vänner!</p>
+            <Button onClick={() => setShowCreate(true)}>Create group</Button>
           </CardContent>
         </Card>
       ) : (

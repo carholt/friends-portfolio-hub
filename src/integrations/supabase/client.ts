@@ -3,10 +3,10 @@ import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 import { env } from '@/config/env';
 
-// Import the supabase client like this:
-// import { supabase } from "@/integrations/supabase/client";
+const fallbackUrl = env.supabaseUrl || 'https://invalid.supabase.local';
+const fallbackKey = env.supabaseAnonKey || 'invalid-key';
 
-export const supabase = createClient<Database>(env.supabaseUrl, env.supabaseAnonKey, {
+export const supabase = createClient<Database>(fallbackUrl, fallbackKey, {
   auth: {
     storage: localStorage,
     persistSession: true,

@@ -132,3 +132,18 @@ Runs `npm ci` + `npm run build` on push/PR with placeholder Vite env vars.
 2. Configure Supabase Auth redirect URLs.
 3. Set Supabase function secrets.
 4. Add GitHub Actions secrets.
+
+## 8) User onboarding behavior
+
+- New users with no portfolios and `profiles.onboarding_completed = false` are shown a 3-step onboarding flow on Home:
+  1. Create first portfolio (name + base currency)
+  2. Add first holding (symbol + quantity + optional average cost)
+  3. Choose visibility
+- If a user already has a portfolio, onboarding is skipped.
+- Completing the flow sets `profiles.onboarding_completed = true`.
+
+## 9) What happens when prices are missing
+
+- Portfolio total value prefers latest server valuation from `portfolio_valuations`.
+- If no valuation exists yet, UI shows an estimated client-side total and marks it as **Estimated**.
+- Holdings without a latest price are marked as **Unpriced** and contribute zero to the estimated total.
