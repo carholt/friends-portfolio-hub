@@ -171,6 +171,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
                     <TableHead className="text-right">Antal</TableHead>
                     <TableHead className="text-right">Snittpris</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Errors</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -188,6 +189,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
                           <Badge variant="destructive" className="text-xs gap-1" title={r.errors.join(", ")}><AlertCircle className="h-3 w-3" /> {r.errors[0] || "Ogiltig"}</Badge>
                         )}
                       </TableCell>
+                      <TableCell className="text-xs text-destructive">{r.valid ? "—" : r.errors.join(", ")}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

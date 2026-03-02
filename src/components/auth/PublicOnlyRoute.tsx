@@ -13,7 +13,7 @@ export default function PublicOnlyRoute() {
   }
 
   if (user) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/home" replace />;
   }
 
   return <Outlet />;

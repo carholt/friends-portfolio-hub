@@ -1,109 +1,134 @@
 # Friends Portfolio Hub
 
-Production-ready React + Supabase portfolio tracking application with multi-user access controls, RLS-aware data access, price updates, and historical leaderboard analytics.
+Simple portfolio sharing app built with **React + Vite + Supabase**.
 
-## Tech stack
+## What this repo includes
 
-- React + Vite + TypeScript
-- Supabase (Auth, Postgres, RLS, Edge Functions)
-- Tailwind + shadcn/ui
-- Vercel (frontend hosting)
+- Strong env hygiene (`.env` ignored, `.env.example` tracked)
+- Auth guards + loading-safe routing
+- RLS-backed access (`can_access_portfolio`) and server-side leaderboard RPC (`get_leaderboard`)
+- Import/export (CSV + JSON) with row validation
+- Daily price update edge function + GitHub Actions scheduler
 
-## Required environment variables
+---
 
-### Frontend (`Vercel` / local)
-
-Copy `.env.example` to `.env.local` for local development.
-
-```bash
-cp .env.example .env.local
-```
-
-Set:
-
-- `VITE_SUPABASE_URL` - your Supabase project URL
-- `VITE_SUPABASE_PUBLISHABLE_KEY` - Supabase anon key (public key)
-
-> Never commit `.env` files with secrets.
-
-### Supabase Edge Function secrets
-
-Configure in Supabase for `update-prices` function:
-
-- `TWELVE_DATA_API_KEY` - TwelveData API key (server-side only)
-- `SUPABASE_URL` - automatically available in Supabase functions runtime
-- `SUPABASE_SERVICE_ROLE_KEY` - automatically available in Supabase functions runtime
-
-## Local development
+## 1) Local setup
 
 ```bash
 npm install
+cp .env.example .env.local
 npm run dev
 ```
 
-## Database and functions deployment
+Required frontend env vars:
 
-1. Link/auth with Supabase CLI.
-2. Run migrations:
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+
+The app fails fast on startup if either is missing.
+
+---
+
+## 2) Deploy frontend to AWS Amplify (Vite SPA)
+
+1. In Amplify, connect this GitHub repo/branch.
+2. Build settings:
+   - **Build command:** `npm run build`
+   - **Output directory:** `dist`
+3. Add environment variables in Amplify:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY`
+4. Add SPA rewrite rule:
+   - Source: `</^[^.]+$|\.(?!(css|js|png|jpg|jpeg|gif|svg|ico|json|txt|woff|woff2|ttf)$)([^.]+$)/>`
+   - Target: `/index.html`
+   - Type: `200 (Rewrite)`
+5. Deploy.
+
+---
+
+## 3) Supabase setup (DB + RLS + function)
+
+### Run migrations
 
 ```bash
+supabase link --project-ref <your-project-ref>
 supabase db push
 ```
 
-3. Deploy edge function:
+This creates required tables and policies for:
+
+- profiles, groups, group_members, group_invites
+- portfolios, holdings, assets, prices, portfolio_valuations
+- RLS visibility model (`private`, `authenticated`, `group`, `public`)
+- helper functions:
+  - `can_access_portfolio(portfolio_id)`
+  - `get_leaderboard(period)`
+
+### Deploy edge function
 
 ```bash
 supabase functions deploy update-prices --no-verify-jwt
 ```
 
-4. Set secret(s):
+### Required function secrets
 
 ```bash
-supabase secrets set TWELVE_DATA_API_KEY=YOUR_KEY
+supabase secrets set TWELVE_DATA_API_KEY=your_twelve_data_key
+supabase secrets set SUPABASE_URL=https://<project-ref>.supabase.co
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 ```
 
-## Daily cron setup (GitHub Actions -> Edge Function)
+---
 
-A workflow is included at `.github/workflows/daily-price-update.yml`.
+## 4) GitHub Actions daily price update
 
-### Required GitHub repository secrets
+Workflow file: `.github/workflows/daily-price-update.yml`
+
+### Required GitHub secrets
 
 - `SUPABASE_FUNCTION_URL` (e.g. `https://<project-ref>.functions.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-The workflow runs daily and triggers `POST /update-prices`.
+### Trigger manually
 
-## Vercel deployment
+- GitHub → Actions → **Daily price update** → **Run workflow**
 
-1. Import repository in Vercel.
-2. Set frontend env vars:
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_PUBLISHABLE_KEY`
-3. Build command: `npm run build`
-4. Output directory: `dist`
-5. Deploy.
+---
 
-SPA rewrites are configured in `vercel.json` to route all paths to `index.html`.
+## 5) CI build
 
-## Security and access model
+Workflow file: `.github/workflows/ci.yml`
 
-Portfolio visibility is enforced in Postgres with RLS:
+Runs `npm ci` + `npm run build` on push/PR with placeholder Vite env vars.
 
-- `private` - owner only
-- `authenticated` - any logged-in user
-- `group` - group members
-- `public` - everyone
+---
 
-The app uses server-side constrained queries and SQL functions (`can_access_portfolio`, `get_leaderboard`) to avoid frontend-only filtering.
+## 6) Troubleshooting
 
-## Import / export
+### Auth redirect URL issues
 
-- CSV import with row-level validation (symbol, asset type, quantity, avg cost, currency)
-- JSON import support
-- JSON export for portfolios + holdings metadata
+- In Supabase Auth settings, ensure your Amplify domain is in:
+  - **Site URL**
+  - **Redirect URLs**
+- Include local URL during dev (`http://localhost:5173`).
 
-## Auth flow
+### Prices not updating
 
-- Session persistence through Supabase auth settings
-- Route guards for protected routes
-- Public-only routes redirect authenticated users to dashboard
+- Confirm `TWELVE_DATA_API_KEY` is set in Supabase secrets.
+- Manually run the GitHub workflow and inspect response logs.
+- Confirm holdings exist (function only fetches prices for assets in holdings).
+
+### Leaderboard empty
+
+- Ensure at least one valuation exists in `portfolio_valuations`.
+- Confirm portfolio visibility and membership rules allow access.
+- Run `update-prices` once to generate latest valuations.
+
+---
+
+## 7) Manual dashboard steps (cannot be fully automated in code)
+
+1. Add Amplify env vars + rewrite rule.
+2. Configure Supabase Auth redirect URLs.
+3. Set Supabase function secrets.
+4. Add GitHub Actions secrets.
