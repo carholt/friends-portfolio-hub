@@ -348,6 +348,7 @@ export type Database = {
           default_currency: string
           display_name: string | null
           id: string
+          onboarding_completed: boolean
           updated_at: string
           user_id: string
         }
@@ -356,6 +357,7 @@ export type Database = {
           default_currency?: string
           display_name?: string | null
           id?: string
+          onboarding_completed?: boolean
           updated_at?: string
           user_id: string
         }
@@ -364,6 +366,7 @@ export type Database = {
           default_currency?: string
           display_name?: string | null
           id?: string
+          onboarding_completed?: boolean
           updated_at?: string
           user_id?: string
         }
@@ -397,6 +400,10 @@ export type Database = {
       is_group_owner: {
         Args: { _group_id: string; _user_id: string }
         Returns: boolean
+      }
+      log_audit_action: {
+        Args: { _action: string; _details?: Json; _entity_id?: string; _entity_type?: string }
+        Returns: undefined
       }
       owns_portfolio: { Args: { _portfolio_id: string }; Returns: boolean }
     }

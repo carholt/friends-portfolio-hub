@@ -148,8 +148,30 @@ In Supabase Dashboard → **Authentication** → **URL Configuration**:
 
 ## 8) Manual steps that remain outside git
 
-- Set Amplify environment variables.
-- Configure Amplify rewrite/redirect SPA fallback.
-- Configure Supabase Auth URL settings.
-- Set Supabase function secrets.
-- Set GitHub Actions secrets.
+1. Add Amplify env vars + rewrite rule.
+2. Configure Supabase Auth redirect URLs.
+3. Set Supabase function secrets.
+4. Add GitHub Actions secrets.
+
+## 8) Manual steps that remain outside git
+
+1. Set Amplify environment variables (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`).
+2. Configure Amplify SPA rewrite/redirect fallback (`/*` → `/index.html` with 200 rewrite).
+3. Configure Supabase Auth URL settings (Site URL + Redirect URLs for Amplify + custom domain + localhost).
+4. Set Supabase Edge Function secrets (`TWELVE_DATA_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`).
+5. Set GitHub Actions secrets (`SUPABASE_FUNCTION_URL`, `SUPABASE_SERVICE_ROLE_KEY`).
+
+## 9) User onboarding behavior
+
+- New users with **no portfolios** and `profiles.onboarding_completed = false` are shown a 3-step onboarding flow on Home:
+  1. Create first portfolio (name + base currency)
+  2. Add first holding (symbol + quantity + optional average cost)
+  3. Choose visibility
+- If a user already has a portfolio, onboarding is skipped.
+- Completing the flow sets `profiles.onboarding_completed = true`.
+
+## 10) What happens when prices are missing
+
+- Portfolio total value prefers latest server valuation from `portfolio_valuations`.
+- If no valuation exists yet, UI shows an estimated client-side total marked **Estimated**.
+- Holdings without a latest price are marked **Unpriced** and contribute zero to the estimate.

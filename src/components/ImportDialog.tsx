@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Upload, FileText, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { parseCSV, parseJSONImport, validateImportRows } from "@/lib/portfolio-utils";
+import { logAuditAction } from "@/lib/audit";
 
 interface Props {
   open: boolean;
@@ -111,6 +112,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
       if (!error) imported++;
     }
 
+    await logAuditAction("import", "portfolio", portfolioId, { imported });
     toast.success(`${imported} innehav importerade`);
     setPreview([]);
     setRawText("");

@@ -19,42 +19,63 @@ import Leaderboard from "./pages/Leaderboard";
 import Groups from "./pages/Groups";
 import SettingsPage from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import { envError } from "@/config/env";
+import { ErrorState } from "@/components/feedback/ErrorState";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      retry: 1,
+    },
+  },
+});
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route element={<PublicOnlyRoute />}>
-              <Route path="/" element={<Landing />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route path="/forgot-password" element={<ForgotPassword />} />
-              <Route path="/reset-password" element={<ResetPassword />} />
-            </Route>
+const App = () => {
+  if (envError) {
+    return (
+      <div className="max-w-xl mx-auto mt-24 px-4">
+        <ErrorState title="Environment setup needed" message={envError} actionLabel="Reload" onAction={() => window.location.reload()} />
+      </div>
+    );
+  }
 
-            <Route element={<ProtectedRoute />}>
-              <Route path="/home" element={<HomePage />} />
-              <Route path="/portfolios" element={<PortfoliosPage />} />
-              <Route path="/dashboard" element={<Navigate to="/portfolios" replace />} />
-              <Route path="/portfolio/:id" element={<PortfolioDetail />} />
-              <Route path="/leaderboard" element={<Leaderboard />} />
-              <Route path="/groups" element={<Groups />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Route>
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <AuthProvider>
+            <Routes>
+              <Route element={<PublicOnlyRoute />}>
+                <Route path="/" element={<Landing />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route path="/forgot-password" element={<ForgotPassword />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
+              </Route>
 
-            <Route path="/p/:slug" element={<PublicPortfolio />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
+              <Route element={<ProtectedRoute />}>
+                <Route path="/home" element={<HomePage />} />
+                <Route path="/portfolios" element={<PortfoliosPage />} />
+                <Route path="/dashboard" element={<Navigate to="/portfolios" replace />} />
+                <Route path="/portfolio/:id" element={<PortfolioDetail />} />
+                <Route path="/leaderboard" element={<Leaderboard />} />
+                <Route path="/groups" element={<Groups />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Route>
+
+              <Route path="/p/:slug" element={<PublicPortfolio />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AuthProvider>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+};
 
 export default App;
