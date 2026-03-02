@@ -374,7 +374,22 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      can_access_portfolio: { Args: { _portfolio_id: string }; Returns: boolean }
       can_view_portfolio: { Args: { _portfolio_id: string }; Returns: boolean }
+      get_leaderboard: {
+        Args: { _period?: string }
+        Returns: {
+          end_value: number | null
+          last_updated: string | null
+          owner_name: string | null
+          portfolio_id: string
+          portfolio_name: string
+          return_abs: number | null
+          return_pct: number | null
+          start_value: number | null
+          visibility: Database["public"]["Enums"]["portfolio_visibility"]
+        }[]
+      }
       is_group_member: {
         Args: { _group_id: string; _user_id: string }
         Returns: boolean

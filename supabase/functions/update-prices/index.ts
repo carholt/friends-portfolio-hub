@@ -1,10 +1,21 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+type Asset = {
+  id: string;
+  symbol: string;
+  asset_type: string;
+  currency: string;
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+const CHUNK_SIZE = 8;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -14,7 +25,8 @@ Deno.serve(async (req) => {
   const TWELVE_DATA_API_KEY = Deno.env.get("TWELVE_DATA_API_KEY");
   if (!TWELVE_DATA_API_KEY) {
     return new Response(JSON.stringify({ error: "TWELVE_DATA_API_KEY not configured" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -23,156 +35,154 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
-    // Get all unique assets used in holdings
-    const { data: assets, error: assetsErr } = await supabase
-      .from("assets")
-      .select("id, symbol, asset_type, currency");
+    const today = new Date().toISOString().split("T")[0];
 
-    if (assetsErr) throw new Error(`Failed to fetch assets: ${assetsErr.message}`);
-    if (!assets || assets.length === 0) {
-      return new Response(JSON.stringify({ message: "No assets to update", updated: 0 }), {
+    const { data: activeHoldings, error: holdingsError } = await supabase
+      .from("holdings")
+      .select("asset_id")
+      .limit(100000);
+
+    if (holdingsError) throw holdingsError;
+
+    const uniqueAssetIds = [...new Set((activeHoldings || []).map((h) => h.asset_id))];
+    if (uniqueAssetIds.length === 0) {
+      return new Response(JSON.stringify({ message: "No holdings/assets to update", updated: 0, date: today }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const today = new Date().toISOString().split("T")[0];
+    const { data: assets, error: assetsError } = await supabase
+      .from("assets")
+      .select("id, symbol, asset_type, currency")
+      .in("id", uniqueAssetIds);
 
-    // Check which assets already have prices for today
+    if (assetsError) throw assetsError;
+
     const { data: existingPrices } = await supabase
       .from("prices")
       .select("asset_id")
       .eq("as_of_date", today);
 
-    const alreadyPriced = new Set(existingPrices?.map(p => p.asset_id) || []);
-    const assetsToFetch = assets.filter(a => !alreadyPriced.has(a.id));
+    const alreadyPriced = new Set(existingPrices?.map((price) => price.asset_id) || []);
+    const assetsToFetch = (assets || []).filter((asset) => !alreadyPriced.has(asset.id));
 
-    if (assetsToFetch.length === 0) {
-      return new Response(JSON.stringify({ message: "All prices already cached for today", updated: 0 }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const fetchedPrices = new Map<string, number>();
+    const missingSymbols: string[] = [];
 
-    // Batch fetch prices from Twelve Data (max 8 per request for free tier)
-    const results: { asset_id: string; price: number; currency: string }[] = [];
-    const batchSize = 8;
+    for (let i = 0; i < assetsToFetch.length; i += CHUNK_SIZE) {
+      const chunk = assetsToFetch.slice(i, i + CHUNK_SIZE) as Asset[];
+      const symbols = chunk
+        .map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol))
+        .join(",");
 
-    for (let i = 0; i < assetsToFetch.length; i += batchSize) {
-      const batch = assetsToFetch.slice(i, i + batchSize);
-      const symbols = batch.map(a => {
-        // For metals, Twelve Data uses XAU/USD, XAG/USD format
-        if (a.asset_type === "metal") {
-          return `${a.symbol}/USD`;
-        }
-        return a.symbol;
-      }).join(",");
+      const response = await fetch(
+        `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols)}&apikey=${TWELVE_DATA_API_KEY}`,
+      );
+      const payload = await response.json();
 
-      const url = `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols)}&apikey=${TWELVE_DATA_API_KEY}`;
-      const resp = await fetch(url);
-      const data = await resp.json();
-
-      if (batch.length === 1) {
-        // Single symbol returns flat object
-        const asset = batch[0];
+      for (const asset of chunk) {
         const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol;
-        if (data.price) {
-          results.push({ asset_id: asset.id, price: parseFloat(data.price), currency: "USD" });
+        const item = chunk.length === 1 ? payload : payload[key];
+        const parsedPrice = Number(item?.price);
+
+        if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
+          fetchedPrices.set(asset.id, parsedPrice);
         } else {
-          console.warn(`No price for ${key}:`, data);
-        }
-      } else {
-        // Multiple symbols returns keyed object
-        for (const asset of batch) {
-          const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol;
-          const priceData = data[key];
-          if (priceData?.price) {
-            results.push({ asset_id: asset.id, price: parseFloat(priceData.price), currency: "USD" });
-          } else {
-            console.warn(`No price for ${key}:`, priceData);
-          }
+          missingSymbols.push(asset.symbol);
         }
       }
 
-      // Rate limit: wait between batches
-      if (i + batchSize < assetsToFetch.length) {
-        await new Promise(r => setTimeout(r, 1500));
+      if (i + CHUNK_SIZE < assetsToFetch.length) {
+        await sleep(1400);
       }
     }
 
-    // Insert prices
-    if (results.length > 0) {
-      const priceRows = results.map(r => ({
-        asset_id: r.asset_id,
-        price: r.price,
-        currency: r.currency,
+    if (fetchedPrices.size > 0) {
+      const rows = [...fetchedPrices.entries()].map(([assetId, price]) => ({
+        asset_id: assetId,
+        price,
+        currency: "USD",
         as_of_date: today,
         source: "twelve_data",
       }));
 
-      const { error: insertErr } = await supabase
+      const { error: upsertError } = await supabase
         .from("prices")
-        .upsert(priceRows, { onConflict: "asset_id,as_of_date" });
+        .upsert(rows, { onConflict: "asset_id,as_of_date" });
 
-      if (insertErr) throw new Error(`Failed to insert prices: ${insertErr.message}`);
+      if (upsertError) throw upsertError;
     }
 
-    // Recalculate portfolio valuations
-    const { data: portfolios } = await supabase
+    const { data: portfolios, error: portfolioError } = await supabase
       .from("portfolios")
       .select("id, base_currency");
 
-    if (portfolios) {
-      for (const portfolio of portfolios) {
-        const { data: holdings } = await supabase
-          .from("holdings")
-          .select("quantity, asset_id")
-          .eq("portfolio_id", portfolio.id);
+    if (portfolioError) throw portfolioError;
 
-        if (!holdings || holdings.length === 0) continue;
+    const latestPriceCache = new Map<string, number>();
 
-        let totalValue = 0;
-        for (const h of holdings) {
-          const priceResult = results.find(r => r.asset_id === h.asset_id);
-          if (priceResult) {
-            totalValue += Number(h.quantity) * priceResult.price;
-          } else {
-            // Try to get from existing prices
-            const { data: existingPrice } = await supabase
-              .from("prices")
-              .select("price")
-              .eq("asset_id", h.asset_id)
-              .order("as_of_date", { ascending: false })
-              .limit(1)
-              .single();
-            if (existingPrice) {
-              totalValue += Number(h.quantity) * Number(existingPrice.price);
-            }
-          }
+    for (const portfolio of portfolios || []) {
+      const { data: holdings } = await supabase
+        .from("holdings")
+        .select("asset_id, quantity")
+        .eq("portfolio_id", portfolio.id);
+
+      if (!holdings || holdings.length === 0) continue;
+
+      let totalValue = 0;
+
+      for (const holding of holdings) {
+        const fromFetch = fetchedPrices.get(holding.asset_id);
+        if (fromFetch != null) {
+          totalValue += Number(holding.quantity) * fromFetch;
+          continue;
         }
 
-        await supabase
-          .from("portfolio_valuations")
-          .upsert({
-            portfolio_id: portfolio.id,
-            total_value: totalValue,
-            currency: portfolio.base_currency,
-            as_of_date: today,
-          }, { onConflict: "portfolio_id,as_of_date" });
+        if (latestPriceCache.has(holding.asset_id)) {
+          totalValue += Number(holding.quantity) * (latestPriceCache.get(holding.asset_id) || 0);
+          continue;
+        }
+
+        const { data: latestStoredPrice } = await supabase
+          .from("prices")
+          .select("price")
+          .eq("asset_id", holding.asset_id)
+          .order("as_of_date", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const fallbackPrice = Number(latestStoredPrice?.price);
+        if (Number.isFinite(fallbackPrice) && fallbackPrice > 0) {
+          latestPriceCache.set(holding.asset_id, fallbackPrice);
+          totalValue += Number(holding.quantity) * fallbackPrice;
+        }
       }
+
+      await supabase.from("portfolio_valuations").upsert(
+        {
+          portfolio_id: portfolio.id,
+          total_value: totalValue,
+          currency: portfolio.base_currency,
+          as_of_date: today,
+        },
+        { onConflict: "portfolio_id,as_of_date" },
+      );
     }
 
-    return new Response(JSON.stringify({
-      message: "Prices updated successfully",
-      updated: results.length,
-      total_assets: assetsToFetch.length,
-      date: today,
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-
+    return new Response(
+      JSON.stringify({
+        message: "Prices and valuations updated",
+        updated: fetchedPrices.size,
+        missing: missingSymbols,
+        date: today,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (error) {
-    console.error("Price update error:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    console.error("update-prices error", error);
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

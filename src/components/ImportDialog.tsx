@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Upload, FileText, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { parseCSV, parseJSONImport } from "@/lib/portfolio-utils";
+import { parseCSV, parseJSONImport, validateImportRows } from "@/lib/portfolio-utils";
 
 interface Props {
   open: boolean;
@@ -27,6 +27,7 @@ interface ImportRow {
   avg_cost: number;
   cost_currency: string;
   valid: boolean;
+  errors: string[];
 }
 
 export default function ImportDialog({ open, onOpenChange, portfolioId, onImported }: Props) {
@@ -37,20 +38,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processData = (rows: any[]) => {
-    const parsed: ImportRow[] = rows.map(r => {
-      const qty = parseFloat(r.quantity);
-      const cost = parseFloat(r.avg_cost);
-      return {
-        symbol: (r.symbol || "").toUpperCase().trim(),
-        name: r.name || r.symbol || "",
-        asset_type: r.asset_type || "stock",
-        exchange: r.exchange || "",
-        quantity: isNaN(qty) ? 0 : qty,
-        avg_cost: isNaN(cost) ? 0 : cost,
-        cost_currency: r.cost_currency || "USD",
-        valid: !!(r.symbol?.trim()) && !isNaN(qty) && qty > 0,
-      };
-    });
+    const parsed: ImportRow[] = validateImportRows(rows);
     setPreview(parsed);
   };
 
@@ -197,7 +185,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
                         {r.valid ? (
                           <Badge variant="success" className="text-xs">OK</Badge>
                         ) : (
-                          <Badge variant="destructive" className="text-xs gap-1"><AlertCircle className="h-3 w-3" /> Ogiltig</Badge>
+                          <Badge variant="destructive" className="text-xs gap-1" title={r.errors.join(", ")}><AlertCircle className="h-3 w-3" /> {r.errors[0] || "Ogiltig"}</Badge>
                         )}
                       </TableCell>
                     </TableRow>

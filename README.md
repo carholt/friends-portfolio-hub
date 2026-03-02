@@ -1,73 +1,109 @@
-# Welcome to your Lovable project
+# Friends Portfolio Hub
 
-## Project info
+Production-ready React + Supabase portfolio tracking application with multi-user access controls, RLS-aware data access, price updates, and historical leaderboard analytics.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Tech stack
 
-## How can I edit this code?
+- React + Vite + TypeScript
+- Supabase (Auth, Postgres, RLS, Edge Functions)
+- Tailwind + shadcn/ui
+- Vercel (frontend hosting)
 
-There are several ways of editing your application.
+## Required environment variables
 
-**Use Lovable**
+### Frontend (`Vercel` / local)
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+Copy `.env.example` to `.env.local` for local development.
 
-Changes made via Lovable will be committed automatically to this repo.
+```bash
+cp .env.example .env.local
+```
 
-**Use your preferred IDE**
+Set:
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+- `VITE_SUPABASE_URL` - your Supabase project URL
+- `VITE_SUPABASE_PUBLISHABLE_KEY` - Supabase anon key (public key)
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+> Never commit `.env` files with secrets.
 
-Follow these steps:
+### Supabase Edge Function secrets
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+Configure in Supabase for `update-prices` function:
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+- `TWELVE_DATA_API_KEY` - TwelveData API key (server-side only)
+- `SUPABASE_URL` - automatically available in Supabase functions runtime
+- `SUPABASE_SERVICE_ROLE_KEY` - automatically available in Supabase functions runtime
 
-# Step 3: Install the necessary dependencies.
-npm i
+## Local development
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Database and functions deployment
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+1. Link/auth with Supabase CLI.
+2. Run migrations:
 
-**Use GitHub Codespaces**
+```bash
+supabase db push
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+3. Deploy edge function:
 
-## What technologies are used for this project?
+```bash
+supabase functions deploy update-prices --no-verify-jwt
+```
 
-This project is built with:
+4. Set secret(s):
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+```bash
+supabase secrets set TWELVE_DATA_API_KEY=YOUR_KEY
+```
 
-## How can I deploy this project?
+## Daily cron setup (GitHub Actions -> Edge Function)
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+A workflow is included at `.github/workflows/daily-price-update.yml`.
 
-## Can I connect a custom domain to my Lovable project?
+### Required GitHub repository secrets
 
-Yes, you can!
+- `SUPABASE_FUNCTION_URL` (e.g. `https://<project-ref>.functions.supabase.co`)
+- `SUPABASE_SERVICE_ROLE_KEY`
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+The workflow runs daily and triggers `POST /update-prices`.
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## Vercel deployment
+
+1. Import repository in Vercel.
+2. Set frontend env vars:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY`
+3. Build command: `npm run build`
+4. Output directory: `dist`
+5. Deploy.
+
+SPA rewrites are configured in `vercel.json` to route all paths to `index.html`.
+
+## Security and access model
+
+Portfolio visibility is enforced in Postgres with RLS:
+
+- `private` - owner only
+- `authenticated` - any logged-in user
+- `group` - group members
+- `public` - everyone
+
+The app uses server-side constrained queries and SQL functions (`can_access_portfolio`, `get_leaderboard`) to avoid frontend-only filtering.
+
+## Import / export
+
+- CSV import with row-level validation (symbol, asset type, quantity, avg cost, currency)
+- JSON import support
+- JSON export for portfolios + holdings metadata
+
+## Auth flow
+
+- Session persistence through Supabase auth settings
+- Route guards for protected routes
+- Public-only routes redirect authenticated users to dashboard
