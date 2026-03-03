@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { groupNordeaHoldingsByAccount, parseCSV, parseExcelImport, parseJSONImport, validateImportRows, type NordeaAccountGroup } from "@/lib/portfolio-utils";
+import { applyTickerResolutionsToRows, normalizeTicker } from "@/lib/ticker-resolution";
 import { logAuditAction } from "@/lib/audit";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -24,6 +25,8 @@ interface AccountSelection {
   visibility: Visibility;
 }
 
+interface ResolverItem { isin: string; name: string; mic?: string; }
+
 interface Props { open: boolean; onOpenChange: (v: boolean) => void; portfolioId: string; onImported: () => void; }
 
 export default function ImportDialog({ open, onOpenChange, portfolioId, onImported }: Props) {
@@ -36,10 +39,44 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const [existingPortfolios, setExistingPortfolios] = useState<PortfolioChoice[]>([]);
   const [nordeaAccounts, setNordeaAccounts] = useState<NordeaAccountGroup[]>([]);
   const [accountSelections, setAccountSelections] = useState<Record<string, AccountSelection>>({});
+  const [tickerResolutions, setTickerResolutions] = useState<Record<string, string>>({});
+  const [tickerSuggestions, setTickerSuggestions] = useState<Record<string, string[]>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const totalSteps = detectedNordea ? 5 : 4;
+  const totalSteps = detectedNordea ? 6 : 4;
   const validRows = useMemo(() => rows.filter((r) => r.valid), [rows]);
+  const resolverItems = useMemo<ResolverItem[]>(() => {
+    if (!detectedNordea) return [];
+    const byIsin = new Map<string, ResolverItem>();
+    validRows.forEach((row) => {
+      const isin = String(row?.metadata_json?.isin ?? row.symbol ?? "").trim();
+      if (!isin || byIsin.has(isin)) return;
+      byIsin.set(isin, { isin, name: String(row.name || "").trim() || isin, mic: String(row?.metadata_json?.mic || "").trim() || undefined });
+    });
+    return [...byIsin.values()];
+  }, [detectedNordea, validRows]);
+
+  useEffect(() => {
+    if (!detectedNordea) return;
+    const defaults: Record<string, string> = {};
+    resolverItems.forEach((item) => {
+      defaults[item.isin] = tickerResolutions[item.isin] || "";
+    });
+    setTickerResolutions(defaults);
+  }, [detectedNordea, resolverItems]);
+
+  const fetchSuggestion = async (item: ResolverItem) => {
+    const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", { body: { mode: "suggest", isin: item.isin, name: item.name, mic: item.mic } });
+    if (error) {
+      toast.error(`No suggestions for ${item.isin}`);
+      return;
+    }
+    const symbols = ((data?.suggestions || []) as any[]).map((x) => String(x.symbol || "").toUpperCase()).filter(Boolean).slice(0, 3);
+    setTickerSuggestions((prev) => ({ ...prev, [item.isin]: symbols }));
+    if (data?.suggested) {
+      setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(String(data.suggested)) }));
+    }
+  };
 
   const parseFile = async (payload: string | ArrayBuffer, fileFormat: ImportFormat) => {
     if (fileFormat === "xlsx") {
@@ -142,6 +179,22 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
       return;
     }
 
+    const unresolved = resolverItems.some((item) => !tickerResolutions[item.isin]?.trim());
+    if (unresolved) {
+      setBusy(false);
+      toast.error("Please resolve all Nordea ISINs to tickers before importing.");
+      return;
+    }
+
+    await supabase.functions.invoke("resolve-asset-ticker", {
+      body: {
+        mode: "apply",
+        resolutions: resolverItems.map((item) => ({ isin: item.isin, ticker: tickerResolutions[item.isin], name: item.name, mic: item.mic })),
+      },
+    });
+
+    const importRows = applyTickerResolutionsToRows(validRows, tickerResolutions);
+
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) {
       setBusy(false);
@@ -173,7 +226,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         targetPortfolioId = created.id;
       }
 
-      const accountRows = validRows.filter((row) => row.account_key === group.accountKey);
+      const accountRows = importRows.filter((row) => row.account_key === group.accountKey);
       await upsertHoldingRows(targetPortfolioId, accountRows, replacedPortfolios);
       await logAuditAction("import", "portfolio", targetPortfolioId, {
         mode,
@@ -189,6 +242,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     onImported();
     toast.success(`Imported ${validRows.length} holdings from Nordea.`);
   };
+
+  const allResolved = resolverItems.every((item) => tickerResolutions[item.isin]?.trim());
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -207,7 +262,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
             <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
           </div>
           <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>)}</TableBody></Table>
-          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(detectedNordea ? 4 : 4)} disabled={validRows.length === 0}>Continue</Button></div>
+          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(4)} disabled={validRows.length === 0}>Continue</Button></div>
         </div>}
 
         {detectedNordea && step === 4 && <div className="space-y-4">
@@ -237,7 +292,15 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(3)}>Back</Button><Button onClick={() => setStep(5)}>Continue</Button></div>
         </div>}
 
-        {((!detectedNordea && step === 4) || (detectedNordea && step === 5)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button></div>}
+        {detectedNordea && step === 5 && <div className="space-y-3">
+          <p className="text-sm font-medium">Resolve tickers (recommended)</p>
+          <Table><TableHeader><TableRow><TableHead>Name / ISIN</TableHead><TableHead>Ticker (required)</TableHead><TableHead>Suggestions</TableHead></TableRow></TableHeader><TableBody>
+            {resolverItems.map((item) => <TableRow key={item.isin}><TableCell><div className="font-medium">{item.name}</div><div className="text-xs text-muted-foreground">{item.isin}</div></TableCell><TableCell><Input value={tickerResolutions[item.isin] || ""} onChange={(e) => setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(e.target.value) }))} placeholder="e.g. AAPL" /></TableCell><TableCell><div className="flex gap-2 items-center"><Button variant="outline" size="sm" onClick={() => fetchSuggestion(item)}>Suggest</Button><div className="text-xs">{(tickerSuggestions[item.isin] || []).join(", ") || "No suggestions yet"}</div></div></TableCell></TableRow>)}
+          </TableBody></Table>
+          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(4)}>Back</Button><Button onClick={() => setStep(6)} disabled={!allResolved}>Continue</Button></div>
+        </div>}
+
+        {((!detectedNordea && step === 4) || (detectedNordea && step === 6)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button></div>}
       </DialogContent>
     </Dialog>
   );

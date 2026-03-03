@@ -6,6 +6,7 @@ type Asset = {
   symbol: string;
   asset_type: string;
   currency: string;
+  metadata_json?: { isin?: string } | null;
 };
 
 const corsHeaders = {
@@ -53,7 +54,7 @@ Deno.serve(async (req) => {
 
     const { data: assets, error: assetsError } = await supabase
       .from("assets")
-      .select("id, symbol, asset_type, currency")
+      .select("id, symbol, asset_type, currency, metadata_json")
       .in("id", uniqueAssetIds);
 
     if (assetsError) throw assetsError;
@@ -68,10 +69,20 @@ Deno.serve(async (req) => {
 
     const fetchedPrices = new Map<string, number>();
     const missingSymbols: string[] = [];
+    const isinSkipped: string[] = [];
 
     for (let i = 0; i < assetsToFetch.length; i += CHUNK_SIZE) {
-      const chunk = assetsToFetch.slice(i, i + CHUNK_SIZE) as Asset[];
-      const symbols = chunk
+            const chunk = assetsToFetch.slice(i, i + CHUNK_SIZE) as Asset[];
+      const priceableChunk = chunk.filter((asset) => !asset.metadata_json?.isin || asset.symbol !== asset.metadata_json.isin);
+      const skipped = chunk.filter((asset) => asset.metadata_json?.isin && asset.symbol === asset.metadata_json.isin);
+      skipped.forEach((asset) => {
+        isinSkipped.push(asset.symbol);
+        console.log(`Skipping ${asset.symbol}: metadata_json.isin present but no resolved ticker symbol yet.`);
+      });
+      if (priceableChunk.length === 0) {
+        continue;
+      }
+      const symbols = priceableChunk
         .map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol))
         .join(",");
 
@@ -80,9 +91,9 @@ Deno.serve(async (req) => {
       );
       const payload = await response.json();
 
-      for (const asset of chunk) {
+      for (const asset of priceableChunk) {
         const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol;
-        const item = chunk.length === 1 ? payload : payload[key];
+        const item = priceableChunk.length === 1 ? payload : payload[key];
         const parsedPrice = Number(item?.price);
 
         if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
@@ -174,6 +185,7 @@ Deno.serve(async (req) => {
         message: "Prices and valuations updated",
         updated: fetchedPrices.size,
         missing: missingSymbols,
+        isin_skipped: isinSkipped,
         date: today,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
