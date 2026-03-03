@@ -17,6 +17,7 @@ export interface ParsedImportRow {
   avg_cost: number;
   cost_currency: string;
   metadata_json?: Record<string, string>;
+  account_key?: string;
   valid: boolean;
   errors: string[];
 }
@@ -25,6 +26,15 @@ export interface ParsedSpreadsheetImport {
   holdings: Array<Record<string, unknown>>;
   detectedNordea: boolean;
   baseCurrency?: string;
+  nordeaAccounts?: NordeaAccountGroup[];
+}
+
+export interface NordeaAccountGroup {
+  accountKey: string;
+  accountName: string;
+  holdingsCount: number;
+  marketValueBase: number | null;
+  baseCurrency: string;
 }
 
 export function convertCurrency(amount: number, from: string, to: string): { value: number; converted: boolean } {
@@ -111,17 +121,58 @@ export function parseJSONImport(text: string): { portfolio?: any; holdings: any[
 function normalizeNordeaRow(row: Record<string, unknown>) {
   const isin = String(row.ISIN ?? "").trim();
   const quantity = Number(row.HOLDINGS);
+  const avgCost = Number(row["Average purchase price"]);
+  const baseCurrency = String(row["Base currency"] ?? "").trim().toUpperCase() || "SEK";
+  const price = Number(row.PRICE);
+  const accountKey = String(row.AccountKey ?? "").trim();
 
   return {
     symbol: isin,
     name: String(row.NAME ?? "").trim(),
     asset_type: "stock",
     quantity,
-    avg_cost: row["Average purchase price"],
-    cost_currency: row.CURRENCY,
-    price: row.PRICE,
-    metadata_json: { isin },
+    avg_cost: Number.isFinite(avgCost) && avgCost >= 0 ? avgCost : 0,
+    cost_currency: String(row.CURRENCY ?? "").trim().toUpperCase() || baseCurrency || "SEK",
+    account_key: accountKey,
+    metadata_json: {
+      isin,
+      ...(String(row.MIC ?? "").trim() ? { mic: String(row.MIC ?? "").trim() } : {}),
+      source: "nordea",
+    },
+    _nordea_price: Number.isFinite(price) ? price : null,
+    _nordea_base_currency: baseCurrency,
   };
+}
+
+export function groupNordeaHoldingsByAccount(rows: Array<Record<string, unknown>>): NordeaAccountGroup[] {
+  const byAccount = new Map<string, NordeaAccountGroup>();
+
+  for (const row of rows) {
+    const accountKey = String(row.AccountKey ?? "").trim();
+    if (!accountKey) continue;
+
+    const current = byAccount.get(accountKey) ?? {
+      accountKey,
+      accountName: String(row.Account ?? "").trim() || "Unnamed account",
+      holdingsCount: 0,
+      marketValueBase: 0,
+      baseCurrency: String(row["Base currency"] ?? "").trim().toUpperCase() || "SEK",
+    };
+
+    current.holdingsCount += 1;
+    const holdings = Number(row.HOLDINGS);
+    const price = Number(row.PRICE);
+    if (Number.isFinite(holdings) && Number.isFinite(price)) {
+      current.marketValueBase = (current.marketValueBase ?? 0) + holdings * price;
+    }
+
+    byAccount.set(accountKey, current);
+  }
+
+  return Array.from(byAccount.values()).map((group) => ({
+    ...group,
+    marketValueBase: Number.isFinite(group.marketValueBase ?? NaN) ? group.marketValueBase : null,
+  }));
 }
 
 export function detectNordeaHoldingsFormat(workbook: XLSX.WorkBook): boolean {
@@ -133,7 +184,8 @@ export function detectNordeaHoldingsFormat(workbook: XLSX.WorkBook): boolean {
     defval: "",
   });
   const headerRow = rows[1] ?? [];
-  return headerRow.some((cell) => String(cell).trim() === "ISIN");
+  return headerRow.some((cell) => String(cell).trim() === "ISIN")
+    && headerRow.some((cell) => String(cell).trim() === "AccountKey");
 }
 
 export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport {
@@ -152,7 +204,14 @@ export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport
       .filter((row) => String(row.Type ?? "").trim() === "Custody")
       .filter((row) => row.ISIN !== null && String(row.ISIN ?? "").trim() !== "")
       .filter((row) => Number.isFinite(Number(row.HOLDINGS)) && Number(row.HOLDINGS) > 0)
+      .filter((row) => String(row.NAME ?? "").trim() !== "")
       .map(normalizeNordeaRow);
+
+    const nordeaAccounts = groupNordeaHoldingsByAccount(rows
+      .filter((row) => String(row.Type ?? "").trim() === "Custody")
+      .filter((row) => row.ISIN !== null && String(row.ISIN ?? "").trim() !== "")
+      .filter((row) => Number.isFinite(Number(row.HOLDINGS)) && Number(row.HOLDINGS) > 0)
+      .filter((row) => String(row.NAME ?? "").trim() !== ""));
 
     const firstBaseCurrency = rows
       .map((row) => String(row["Base currency"] ?? "").trim().toUpperCase())
@@ -162,6 +221,7 @@ export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport
       holdings: filteredRows,
       detectedNordea: true,
       baseCurrency: firstBaseCurrency,
+      nordeaAccounts,
     };
   }
 
@@ -207,6 +267,7 @@ export function validateImportRows(rows: any[]): ParsedImportRow[] {
       avg_cost: Number.isFinite(avgCost) ? avgCost : 0,
       cost_currency: costCurrency,
       metadata_json: metadataJson,
+      account_key: typeof r.account_key === "string" ? r.account_key : undefined,
       valid: errors.length === 0,
       errors,
     };
