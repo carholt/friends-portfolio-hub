@@ -17,12 +17,14 @@ import { formatCurrency } from "@/lib/format";
 import { logAuditAction } from "@/lib/audit";
 import AddHoldingDialog from "@/components/AddHoldingDialog";
 import ImportDialog from "@/components/ImportDialog";
+import ResolveTickerDialog from "@/components/ResolveTickerDialog";
 
 export default function PortfolioDetail() {
   const { id } = useParams<{ id: string }>();
   const [showDetails, setShowDetails] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [resolveAsset, setResolveAsset] = useState<any | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["portfolio", id],
@@ -68,11 +70,12 @@ export default function PortfolioDetail() {
 
         <Card><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Holdings</CardTitle><Button variant="ghost" onClick={() => setShowDetails((s) => !s)}>{showDetails ? "Hide details" : "Show details"}</Button></CardHeader><CardContent>
           {data.overLimit && <p className="text-xs text-amber-600 mb-2">Showing first 200 holdings. Split holdings into multiple portfolios if needed.</p>}
-          {data.holdings.length === 0 ? <EmptyState title="No holdings yet" message="Add your first holding." ctaLabel="Add holding" onCta={() => setShowAdd(true)} /> : <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Value</TableHead><TableHead>P/L</TableHead>{showDetails && <><TableHead>Avg cost</TableHead><TableHead>Status</TableHead></>}</TableRow></TableHeader><TableBody>{data.holdings.map((h: any) => { const value = Number(h.quantity) * Number(h.latest_price || 0); const cost = Number(h.quantity) * Number(h.avg_cost || 0); return <TableRow key={h.id}><TableCell><Link className="underline" to={`/assets/${h.asset?.symbol}`}>{h.asset?.symbol}</Link></TableCell><TableCell>{h.quantity}</TableCell><TableCell>{formatCurrency(value, data.portfolio.base_currency)}</TableCell><TableCell>{formatCurrency(value - cost, data.portfolio.base_currency)}</TableCell>{showDetails && <><TableCell>{h.avg_cost}</TableCell><TableCell>{h.latest_price == null ? "Unpriced" : "Priced"}</TableCell></>}</TableRow>; })}</TableBody></Table>}
+          {data.holdings.length === 0 ? <EmptyState title="No holdings yet" message="Add your first holding." ctaLabel="Add holding" onCta={() => setShowAdd(true)} /> : <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Value</TableHead><TableHead>P/L</TableHead>{showDetails && <><TableHead>Avg cost</TableHead><TableHead>Status</TableHead></>}</TableRow></TableHeader><TableBody>{data.holdings.map((h: any) => { const value = Number(h.quantity) * Number(h.latest_price || 0); const cost = Number(h.quantity) * Number(h.avg_cost || 0); return <TableRow key={h.id}><TableCell><Link className="underline" to={`/assets/${h.asset?.symbol}`}>{h.asset?.symbol}</Link></TableCell><TableCell>{h.quantity}</TableCell><TableCell>{formatCurrency(value, data.portfolio.base_currency)}</TableCell><TableCell>{formatCurrency(value - cost, data.portfolio.base_currency)}</TableCell>{showDetails && <><TableCell>{h.avg_cost}</TableCell><TableCell>{h.latest_price == null ? <span className="flex items-center gap-2">Unpriced{h.asset?.metadata_json?.isin && <Button size="sm" variant="outline" onClick={() => setResolveAsset({ isin: h.asset.metadata_json.isin, name: h.asset?.name || h.asset?.symbol, mic: h.asset?.metadata_json?.mic })}>Resolve ticker</Button>}</span> : "Priced"}</TableCell></>}</TableRow>; })}</TableBody></Table>}
         </CardContent></Card>
       </div>
       <AddHoldingDialog open={showAdd} onOpenChange={setShowAdd} portfolioId={id!} defaultCurrency={data.portfolio.base_currency} onAdded={refetch} />
       <ImportDialog open={showImport} onOpenChange={setShowImport} portfolioId={id!} onImported={refetch} />
+      {resolveAsset && <ResolveTickerDialog open={!!resolveAsset} onOpenChange={(open) => !open && setResolveAsset(null)} isin={resolveAsset.isin} name={resolveAsset.name} mic={resolveAsset.mic} onResolved={refetch} />}
     </AppLayout>
   );
 }
