@@ -4,7 +4,7 @@ const FX_RATES: Record<string, Record<string, number>> = {
   EUR: { USD: 1.09, SEK: 11.4, EUR: 1 },
 };
 
-const ALLOWED_ASSET_TYPES = new Set(["stock", "etf", "fund", "metal", "other"]);
+const ALLOWED_ASSET_TYPES = new Set(["stock", "etf", "fund", "metal", "crypto", "other"]);
 
 export interface ParsedImportRow {
   symbol: string;
@@ -106,7 +106,7 @@ export function validateImportRows(rows: any[]): ParsedImportRow[] {
     const assetType = String(r.asset_type || "stock").toLowerCase().trim();
     const exchange = String(r.exchange || "").trim();
     const quantity = Number(r.quantity);
-    const avgCost = Number(r.avg_cost);
+    const avgCost = r.avg_cost === undefined || r.avg_cost === null || String(r.avg_cost).trim() === "" ? 0 : Number(r.avg_cost);
     const costCurrency = String(r.cost_currency || "USD").toUpperCase().trim();
     const errors: string[] = [];
 

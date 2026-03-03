@@ -1,207 +1,102 @@
-import { useState, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
-import { Upload, FileText, AlertCircle } from "lucide-react";
+import { Upload } from "lucide-react";
 import { toast } from "sonner";
 import { parseCSV, parseJSONImport, validateImportRows } from "@/lib/portfolio-utils";
 import { logAuditAction } from "@/lib/audit";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-interface Props {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  portfolioId: string;
-  onImported: () => void;
-}
+type ImportFormat = "csv" | "json";
+type ImportMode = "replace" | "merge";
 
-interface ImportRow {
-  symbol: string;
-  name: string;
-  asset_type: string;
-  exchange: string;
-  quantity: number;
-  avg_cost: number;
-  cost_currency: string;
-  valid: boolean;
-  errors: string[];
-}
+interface Props { open: boolean; onOpenChange: (v: boolean) => void; portfolioId: string; onImported: () => void; }
 
 export default function ImportDialog({ open, onOpenChange, portfolioId, onImported }: Props) {
-  const { user } = useAuth();
-  const [preview, setPreview] = useState<ImportRow[]>([]);
-  const [importing, setImporting] = useState(false);
-  const [rawText, setRawText] = useState("");
+  const [step, setStep] = useState(1);
+  const [format, setFormat] = useState<ImportFormat>("csv");
+  const [mode, setMode] = useState<ImportMode>("replace");
+  const [rows, setRows] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const processData = (rows: any[]) => {
-    const parsed: ImportRow[] = validateImportRows(rows);
-    setPreview(parsed);
+  const validRows = useMemo(() => rows.filter((r) => r.valid), [rows]);
+
+  const parseFile = (text: string, fileFormat: ImportFormat) => {
+    const parsed = fileFormat === "json" ? parseJSONImport(text).holdings : parseCSV(text);
+    setRows(validateImportRows(parsed));
+    setStep(3);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      setRawText(text);
-      if (file.name.endsWith(".json")) {
-        try {
-          const { holdings } = parseJSONImport(text);
-          processData(holdings);
-        } catch { toast.error("Ogiltig JSON-fil"); }
-      } else {
-        const rows = parseCSV(text);
-        processData(rows);
+      try {
+        parseFile(String(ev.target?.result || ""), format);
+      } catch {
+        toast.error("Could not parse file.");
       }
     };
     reader.readAsText(file);
   };
 
-  const handlePasteCSV = () => {
-    if (!rawText.trim()) return;
-    try {
-      const parsed = JSON.parse(rawText);
-      if (parsed.holdings) {
-        processData(parsed.holdings);
-        return;
-      }
-    } catch {}
-    const rows = parseCSV(rawText);
-    processData(rows);
-  };
-
-  const handleImport = async () => {
-    if (!user) return;
-    const validRows = preview.filter(r => r.valid);
-    if (validRows.length === 0) { toast.error("Inga giltiga rader att importera"); return; }
-
-    setImporting(true);
-    let imported = 0;
-
-    for (const row of validRows) {
-      // Upsert asset
-      const { data: existing } = await supabase.from("assets").select("id").eq("symbol", row.symbol).single();
-      let assetId: string;
-      if (existing) {
-        assetId = existing.id;
-      } else {
-        const { data: newAsset, error } = await supabase.from("assets").insert({
-          symbol: row.symbol,
-          name: row.name,
-          asset_type: row.asset_type as any,
-          exchange: row.exchange || null,
-          currency: row.cost_currency,
-        }).select("id").single();
-        if (error || !newAsset) continue;
-        assetId = newAsset.id;
-      }
-
-      const { error } = await supabase.from("holdings").insert({
-        portfolio_id: portfolioId,
-        asset_id: assetId,
-        quantity: row.quantity,
-        avg_cost: row.avg_cost,
-        cost_currency: row.cost_currency,
-      });
-      if (!error) imported++;
+  const runImport = async () => {
+    setBusy(true);
+    if (mode === "replace") {
+      await supabase.from("holdings").delete().eq("portfolio_id", portfolioId);
     }
 
-    await logAuditAction("import", "portfolio", portfolioId, { imported });
-    toast.success(`${imported} innehav importerade`);
-    setPreview([]);
-    setRawText("");
+    for (const row of validRows) {
+      const { data: asset } = await supabase.from("assets").select("id").eq("symbol", row.symbol).maybeSingle();
+      const assetId = asset?.id || (await supabase.from("assets").insert({
+        symbol: row.symbol,
+        name: row.name || row.symbol,
+        asset_type: row.asset_type as any,
+        exchange: row.exchange || null,
+        currency: row.cost_currency,
+      }).select("id").single()).data?.id;
+      if (!assetId) continue;
+
+      const { data: existing } = await supabase.from("holdings").select("id,quantity,avg_cost").eq("portfolio_id", portfolioId).eq("asset_id", assetId).maybeSingle();
+      if (existing) {
+        const qty = mode === "merge" ? Number(existing.quantity) + row.quantity : row.quantity;
+        const avg = mode === "merge" ? ((Number(existing.quantity) * Number(existing.avg_cost)) + (row.quantity * row.avg_cost)) / qty : row.avg_cost;
+        await supabase.from("holdings").update({ quantity: qty, avg_cost: avg, cost_currency: row.cost_currency }).eq("id", existing.id);
+      } else {
+        await supabase.from("holdings").insert({ portfolio_id: portfolioId, asset_id: assetId, quantity: row.quantity, avg_cost: row.avg_cost, cost_currency: row.cost_currency });
+      }
+    }
+
+    await logAuditAction("import", "portfolio", portfolioId, { mode, valid_rows: validRows.length, total_rows: rows.length });
+    setBusy(false);
     onOpenChange(false);
     onImported();
-    setImporting(false);
+    toast.success(`Imported ${validRows.length} holdings.`);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Importera innehav</DialogTitle>
-        </DialogHeader>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Import holdings (Step {step}/4)</DialogTitle></DialogHeader>
 
-        <Tabs defaultValue="file">
-          <TabsList className="w-full">
-            <TabsTrigger value="file" className="flex-1">Fil</TabsTrigger>
-            <TabsTrigger value="paste" className="flex-1">Klistra in</TabsTrigger>
-          </TabsList>
+        {step === 1 && <div className="space-y-3"><p className="text-sm">Choose file format.</p><Select value={format} onValueChange={(v) => setFormat(v as ImportFormat)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="csv">CSV (symbol,quantity required)</SelectItem><SelectItem value="json">JSON</SelectItem></SelectContent></Select><Button onClick={() => setStep(2)}>Continue</Button></div>}
+        {step === 2 && <div className="space-y-3"><p className="text-sm">Upload your {format.toUpperCase()} file.</p><div className="border-dashed border rounded p-10 text-center cursor-pointer" onClick={() => fileInputRef.current?.click()}><Upload className="mx-auto mb-2" />Click to upload</div><input ref={fileInputRef} type="file" accept={format === "csv" ? ".csv" : ".json"} className="hidden" onChange={onUpload} /><Button variant="outline" onClick={() => setStep(1)}>Back</Button></div>}
 
-          <TabsContent value="file" className="space-y-4">
-            <div
-              className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:border-primary/50 transition-colors"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-              <p className="text-sm text-muted-foreground">Klicka för att välja CSV eller JSON-fil</p>
-              <input ref={fileInputRef} type="file" accept=".csv,.json" onChange={handleFileUpload} className="hidden" />
-            </div>
-          </TabsContent>
-
-          <TabsContent value="paste" className="space-y-4">
-            <Textarea
-              value={rawText}
-              onChange={(e) => setRawText(e.target.value)}
-              placeholder={`symbol,name,asset_type,exchange,quantity,avg_cost,cost_currency\nXAU,Gold,metal,,10,2000,USD`}
-              rows={6}
-              className="font-mono text-xs"
-            />
-            <Button variant="outline" onClick={handlePasteCSV} className="w-full">Förhandsgranska</Button>
-          </TabsContent>
-        </Tabs>
-
-        {preview.length > 0 && (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4" />
-              <span className="text-sm font-medium">{preview.filter(r => r.valid).length} giltiga / {preview.length} rader</span>
-            </div>
-            <div className="max-h-60 overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Symbol</TableHead>
-                    <TableHead>Namn</TableHead>
-                    <TableHead>Typ</TableHead>
-                    <TableHead className="text-right">Antal</TableHead>
-                    <TableHead className="text-right">Snittpris</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Errors</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {preview.map((r, i) => (
-                    <TableRow key={i} className={!r.valid ? "opacity-50" : ""}>
-                      <TableCell className="font-mono">{r.symbol}</TableCell>
-                      <TableCell>{r.name}</TableCell>
-                      <TableCell>{r.asset_type}</TableCell>
-                      <TableCell className="text-right">{r.quantity}</TableCell>
-                      <TableCell className="text-right">{r.avg_cost}</TableCell>
-                      <TableCell>
-                        {r.valid ? (
-                          <Badge variant="success" className="text-xs">OK</Badge>
-                        ) : (
-                          <Badge variant="destructive" className="text-xs gap-1" title={r.errors.join(", ")}><AlertCircle className="h-3 w-3" /> {r.errors[0] || "Ogiltig"}</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-destructive">{r.valid ? "—" : r.errors.join(", ")}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <Button variant="hero" className="w-full" onClick={handleImport} disabled={importing || preview.filter(r => r.valid).length === 0}>
-              {importing ? "Importerar…" : `Importera ${preview.filter(r => r.valid).length} innehav`}
-            </Button>
+        {step >= 3 && <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm">Preview and validation ({validRows.length}/{rows.length} valid)</p>
+            <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
           </div>
-        )}
+          <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{rows.map((r, i) => <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell></TableRow>)}</TableBody></Table>
+          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(4)} disabled={validRows.length === 0}>Confirm</Button></div>
+        </div>}
+
+        {step === 4 && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings for this portfolio.</p><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button></div>}
       </DialogContent>
     </Dialog>
   );
