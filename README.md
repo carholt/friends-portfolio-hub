@@ -29,7 +29,7 @@ Required frontend env vars:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 
-The app fails fast at startup if either variable is missing.
+If either variable is missing, the app renders a friendly setup error screen with fix instructions instead of a blank page.
 
 ## 2) AWS Amplify deployment (Vite SPA)
 
@@ -41,7 +41,7 @@ This repo includes `amplify.yml` configured for Vite:
 
 Deployment steps:
 
-1. In AWS Amplify, connect this repository and branch.
+1. In AWS Amplify, connect this GitHub repository and select the `main` branch.
 2. Confirm Amplify uses repository `amplify.yml`.
 3. In Amplify **Environment variables**, add:
    - `VITE_SUPABASE_URL`

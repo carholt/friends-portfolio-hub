@@ -6,140 +6,123 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import { logAuditAction } from "@/lib/audit";
 
 interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   portfolioId: string;
+  defaultCurrency: string;
   onAdded: () => void;
 }
 
-export default function AddHoldingDialog({ open, onOpenChange, portfolioId, onAdded }: Props) {
+const assetTypes = ["stock", "etf", "fund", "metal", "crypto", "other"];
+
+export default function AddHoldingDialog({ open, onOpenChange, portfolioId, defaultCurrency, onAdded }: Props) {
   const [symbol, setSymbol] = useState("");
-  const [name, setName] = useState("");
+  const [exchange, setExchange] = useState("");
   const [assetType, setAssetType] = useState("stock");
   const [quantity, setQuantity] = useState("");
   const [avgCost, setAvgCost] = useState("");
-  const [costCurrency, setCostCurrency] = useState("SEK");
-  const [exchange, setExchange] = useState("");
+  const [costCurrency, setCostCurrency] = useState(defaultCurrency || "USD");
   const [loading, setLoading] = useState(false);
 
   const handleAdd = async () => {
-    if (!symbol.trim() || !name.trim() || !quantity || !avgCost) return;
+    const clean = symbol.toUpperCase().trim();
+    const qty = Number(quantity);
+    const avg = avgCost ? Number(avgCost) : 0;
+    if (!clean || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(avg) || avg < 0) {
+      toast.error("Provide symbol, quantity > 0, and avg cost >= 0.");
+      return;
+    }
+
     setLoading(true);
+    const { data: existingAsset } = await supabase.from("assets").select("id").eq("symbol", clean).maybeSingle();
+    let assetId = existingAsset?.id;
 
-    // Upsert asset
-    const { data: existingAsset } = await supabase
-      .from("assets")
-      .select("id")
-      .eq("symbol", symbol.toUpperCase().trim())
-      .single();
+    if (!assetId) {
+      const { data: createdAsset, error: assetError } = await supabase.from("assets").insert({
+        symbol: clean,
+        name: clean,
+        exchange: exchange.trim() || null,
+        asset_type: assetType as any,
+        currency: costCurrency,
+        metadata_json: { created_by: "manual-entry" },
+      }).select("id").single();
 
-    let assetId: string;
-    if (existingAsset) {
-      assetId = existingAsset.id;
-    } else {
-      const { data: newAsset, error: assetErr } = await supabase
-        .from("assets")
-        .insert({
-          symbol: symbol.toUpperCase().trim(),
-          name: name.trim(),
-          asset_type: assetType as any,
-          exchange: exchange.trim() || null,
-          currency: costCurrency,
-        })
-        .select("id")
-        .single();
-      if (assetErr || !newAsset) {
-        toast.error(assetErr?.message || "Kunde inte skapa tillgång");
+      if (assetError || !createdAsset) {
+        toast.error(assetError?.message || "Unable to create asset.");
         setLoading(false);
         return;
       }
-      assetId = newAsset.id;
+      assetId = createdAsset.id;
     }
 
-    const { error } = await supabase.from("holdings").insert({
-      portfolio_id: portfolioId,
-      asset_id: assetId,
-      quantity: parseFloat(quantity),
-      avg_cost: parseFloat(avgCost),
-      cost_currency: costCurrency,
-    });
+    const { data: existingHolding } = await supabase
+      .from("holdings")
+      .select("id,quantity,avg_cost")
+      .eq("portfolio_id", portfolioId)
+      .eq("asset_id", assetId)
+      .maybeSingle();
 
-    if (error) {
-      toast.error(error.message);
+    if (existingHolding) {
+      const mergedQty = Number(existingHolding.quantity) + qty;
+      const mergedCostBasis = (Number(existingHolding.quantity) * Number(existingHolding.avg_cost)) + (qty * avg);
+      const mergedAvg = mergedQty > 0 ? mergedCostBasis / mergedQty : 0;
+
+      const { error: mergeError } = await supabase
+        .from("holdings")
+        .update({ quantity: mergedQty, avg_cost: mergedAvg, cost_currency: costCurrency })
+        .eq("id", existingHolding.id);
+
+      if (mergeError) {
+        toast.error(mergeError.message);
+      } else {
+        await logAuditAction("holding_merge", "portfolio", portfolioId, { symbol: clean, added_quantity: qty });
+        toast.success("Position existed, so we merged it automatically.");
+      }
     } else {
-      toast.success("Innehav tillagt!");
-      setSymbol("");
-      setName("");
-      setQuantity("");
-      setAvgCost("");
-      onOpenChange(false);
-      onAdded();
+      const { error } = await supabase.from("holdings").insert({
+        portfolio_id: portfolioId,
+        asset_id: assetId,
+        quantity: qty,
+        avg_cost: avg,
+        cost_currency: costCurrency,
+      });
+      if (error) toast.error(error.message);
+      else {
+        await logAuditAction("holding_add", "portfolio", portfolioId, { symbol: clean, quantity: qty });
+        toast.success("Holding added.");
+      }
     }
+
     setLoading(false);
+    setSymbol("");
+    setExchange("");
+    setQuantity("");
+    setAvgCost("");
+    onOpenChange(false);
+    onAdded();
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Lägg till innehav</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Symbol</Label>
-              <Input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="XAU, NEM, SLV" className="font-mono" />
-            </div>
-            <div className="space-y-2">
-              <Label>Namn</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Gold, Newmont, iShares Silver" />
-            </div>
+        <DialogHeader><DialogTitle>Add holding</DialogTitle></DialogHeader>
+        <div className="grid gap-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1"><Label>Symbol *</Label><Input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="NEM" /></div>
+            <div className="space-y-1"><Label>Exchange</Label><Input value={exchange} onChange={(e) => setExchange(e.target.value)} placeholder="NYSE" /></div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Typ</Label>
-              <Select value={assetType} onValueChange={setAssetType}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="stock">Aktie</SelectItem>
-                  <SelectItem value="etf">ETF</SelectItem>
-                  <SelectItem value="fund">Fond</SelectItem>
-                  <SelectItem value="metal">Metall</SelectItem>
-                  <SelectItem value="other">Övrigt</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Börs</Label>
-              <Input value={exchange} onChange={(e) => setExchange(e.target.value)} placeholder="NYSE, NASDAQ, OMX" />
-            </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1"><Label>Asset type</Label><Select value={assetType} onValueChange={setAssetType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{assetTypes.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent></Select></div>
+            <div className="space-y-1"><Label>Cost currency</Label><Input value={costCurrency} onChange={(e) => setCostCurrency(e.target.value.toUpperCase())} /></div>
           </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label>Antal</Label>
-              <Input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="10" />
-            </div>
-            <div className="space-y-2">
-              <Label>Snittpris</Label>
-              <Input type="number" value={avgCost} onChange={(e) => setAvgCost(e.target.value)} placeholder="2000" />
-            </div>
-            <div className="space-y-2">
-              <Label>Valuta</Label>
-              <Select value={costCurrency} onValueChange={setCostCurrency}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="SEK">SEK</SelectItem>
-                  <SelectItem value="USD">USD</SelectItem>
-                  <SelectItem value="EUR">EUR</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1"><Label>Quantity *</Label><Input type="number" min="0" step="any" value={quantity} onChange={(e) => setQuantity(e.target.value)} /></div>
+            <div className="space-y-1"><Label>Average cost</Label><Input type="number" min="0" step="any" value={avgCost} onChange={(e) => setAvgCost(e.target.value)} placeholder="Optional" /></div>
           </div>
-          <Button variant="hero" className="w-full" onClick={handleAdd} disabled={loading || !symbol.trim() || !name.trim()}>
-            {loading ? "Lägger till…" : "Lägg till"}
-          </Button>
+          <Button onClick={handleAdd} disabled={loading}>{loading ? "Saving..." : "Save holding"}</Button>
         </div>
       </DialogContent>
     </Dialog>

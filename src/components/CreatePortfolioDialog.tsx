@@ -21,6 +21,8 @@ export default function CreatePortfolioDialog({ open, onOpenChange, onCreated }:
   const [groupId, setGroupId] = useState<string>("none");
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [quickGroupName, setQuickGroupName] = useState("");
+  const [broker, setBroker] = useState("manual");
+  const [brokerNotes, setBrokerNotes] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -46,14 +48,14 @@ export default function CreatePortfolioDialog({ open, onOpenChange, onCreated }:
     const slug = visibility === "public" ? `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${Date.now().toString(36)}` : null;
     const { data, error } = await supabase.from("portfolios").insert({
       owner_user_id: user.id, name: name.trim(), description: description.trim() || null, visibility: visibility as any,
-      group_id: visibility === "group" ? groupId : null, base_currency: baseCurrency, public_slug: slug,
+      group_id: visibility === "group" ? groupId : null, base_currency: baseCurrency, public_slug: slug, broker, broker_notes: brokerNotes || null,
     }).select("id").single();
 
     if (error) toast.error(error.message);
     else {
       await logAuditAction("portfolio_create", "portfolio", data?.id, { visibility, baseCurrency });
       toast.success("Portfölj skapad!");
-      setName(""); setDescription(""); setVisibility("private"); setGroupId("none"); onOpenChange(false); onCreated();
+      setName(""); setDescription(""); setVisibility("private"); setGroupId("none"); setBroker("manual"); setBrokerNotes(""); onOpenChange(false); onCreated();
     }
     setLoading(false);
   };
@@ -68,6 +70,10 @@ export default function CreatePortfolioDialog({ open, onOpenChange, onCreated }:
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2"><Label>Synlighet</Label><Select value={visibility} onValueChange={setVisibility}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="private">Privat</SelectItem><SelectItem value="authenticated">Alla inloggade</SelectItem><SelectItem value="group">Vängrupp</SelectItem><SelectItem value="public">Publik</SelectItem></SelectContent></Select></div>
             <div className="space-y-2"><Label>Basvaluta</Label><Select value={baseCurrency} onValueChange={setBaseCurrency}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SEK">SEK</SelectItem><SelectItem value="USD">USD</SelectItem><SelectItem value="EUR">EUR</SelectItem></SelectContent></Select></div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2"><Label>Broker</Label><Select value={broker} onValueChange={setBroker}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="manual">manual</SelectItem><SelectItem value="avanza">avanza</SelectItem><SelectItem value="nordea">nordea</SelectItem><SelectItem value="vera_cash">vera_cash</SelectItem><SelectItem value="binance">binance</SelectItem></SelectContent></Select></div>
+            <div className="space-y-2"><Label>Broker notes</Label><Input value={brokerNotes} onChange={(e) => setBrokerNotes(e.target.value)} placeholder="Optional" /></div>
           </div>
           {visibility === "group" && (
             <div className="space-y-2">
