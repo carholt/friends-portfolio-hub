@@ -67,6 +67,28 @@ Deployment steps:
    supabase db push
    ```
 
+### DB safety checks before `supabase db push`
+
+Run these checks before applying migrations in shared/prod-like environments:
+
+```sql
+-- Duplicate holdings that would violate UNIQUE (portfolio_id, asset_id)
+SELECT portfolio_id, asset_id, COUNT(*) AS duplicates
+FROM public.holdings
+GROUP BY portfolio_id, asset_id
+HAVING COUNT(*) > 1;
+
+-- Invalid holding values (must be non-negative)
+SELECT id, portfolio_id, asset_id, quantity, avg_cost
+FROM public.holdings
+WHERE quantity < 0 OR (avg_cost IS NOT NULL AND avg_cost < 0);
+```
+
+Company metrics note:
+
+- `company_metrics` create/update/delete is restricted to the row creator (`created_by = auth.uid()`).
+- `company_metrics.source_url` is mandatory for each metric entry.
+
 3. Deploy Edge Function (`update-prices`):
 
    ```bash
