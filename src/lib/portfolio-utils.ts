@@ -1,3 +1,5 @@
+import * as XLSX from "xlsx";
+
 const FX_RATES: Record<string, Record<string, number>> = {
   USD: { SEK: 10.5, EUR: 0.92, USD: 1 },
   SEK: { USD: 0.095, EUR: 0.088, SEK: 1 },
@@ -14,8 +16,15 @@ export interface ParsedImportRow {
   quantity: number;
   avg_cost: number;
   cost_currency: string;
+  metadata_json?: Record<string, string>;
   valid: boolean;
   errors: string[];
+}
+
+export interface ParsedSpreadsheetImport {
+  holdings: Array<Record<string, unknown>>;
+  detectedNordea: boolean;
+  baseCurrency?: string;
 }
 
 export function convertCurrency(amount: number, from: string, to: string): { value: number; converted: boolean } {
@@ -99,6 +108,68 @@ export function parseJSONImport(text: string): { portfolio?: any; holdings: any[
   return { holdings: [] };
 }
 
+function normalizeNordeaRow(row: Record<string, unknown>) {
+  const isin = String(row.ISIN ?? "").trim();
+  const quantity = Number(row.HOLDINGS);
+
+  return {
+    symbol: isin,
+    name: String(row.NAME ?? "").trim(),
+    asset_type: "stock",
+    quantity,
+    avg_cost: row["Average purchase price"],
+    cost_currency: row.CURRENCY,
+    price: row.PRICE,
+    metadata_json: { isin },
+  };
+}
+
+export function detectNordeaHoldingsFormat(workbook: XLSX.WorkBook): boolean {
+  const sheet = workbook.Sheets.Holdings;
+  if (!sheet) return false;
+  const rows = XLSX.utils.sheet_to_json<Array<string | undefined>>(sheet, {
+    header: 1,
+    blankrows: false,
+    defval: "",
+  });
+  const headerRow = rows[1] ?? [];
+  return headerRow.some((cell) => String(cell).trim() === "ISIN");
+}
+
+export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport {
+  const workbook = XLSX.read(fileData, { type: "array" });
+  const detectedNordea = detectNordeaHoldingsFormat(workbook);
+
+  if (detectedNordea) {
+    const sheet = workbook.Sheets.Holdings;
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      range: 1,
+      defval: null,
+      raw: true,
+    });
+
+    const filteredRows = rows
+      .filter((row) => String(row.Type ?? "").trim() === "Custody")
+      .filter((row) => row.ISIN !== null && String(row.ISIN ?? "").trim() !== "")
+      .filter((row) => Number.isFinite(Number(row.HOLDINGS)) && Number(row.HOLDINGS) > 0)
+      .map(normalizeNordeaRow);
+
+    const firstBaseCurrency = rows
+      .map((row) => String(row["Base currency"] ?? "").trim().toUpperCase())
+      .find((currency) => /^[A-Z]{3}$/.test(currency));
+
+    return {
+      holdings: filteredRows,
+      detectedNordea: true,
+      baseCurrency: firstBaseCurrency,
+    };
+  }
+
+  const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+  const holdings = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: null });
+  return { holdings, detectedNordea: false };
+}
+
 export function validateImportRows(rows: any[]): ParsedImportRow[] {
   return rows.map((r) => {
     const symbol = String(r.symbol || "").toUpperCase().trim();
@@ -108,6 +179,7 @@ export function validateImportRows(rows: any[]): ParsedImportRow[] {
     const quantity = Number(r.quantity);
     const avgCost = r.avg_cost === undefined || r.avg_cost === null || String(r.avg_cost).trim() === "" ? 0 : Number(r.avg_cost);
     const costCurrency = String(r.cost_currency || "USD").toUpperCase().trim();
+    const metadataJson = typeof r.metadata_json === "object" && r.metadata_json !== null ? r.metadata_json : undefined;
     const errors: string[] = [];
 
     if (!symbol || !/^[A-Z0-9.\-/]{1,20}$/.test(symbol)) {
@@ -134,6 +206,7 @@ export function validateImportRows(rows: any[]): ParsedImportRow[] {
       quantity: Number.isFinite(quantity) ? quantity : 0,
       avg_cost: Number.isFinite(avgCost) ? avgCost : 0,
       cost_currency: costCurrency,
+      metadata_json: metadataJson,
       valid: errors.length === 0,
       errors,
     };
