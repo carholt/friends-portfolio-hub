@@ -23,7 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 
-# Environment
+# Environment and local secrets
 .env
+.env.local
 .env.*
+.envrc
+*.env
 !.env.example

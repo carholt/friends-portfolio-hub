@@ -1,185 +1,167 @@
 # Friends Portfolio Hub
 
-Portfolio sharing app built with React, Vite, Supabase, and a scheduled Supabase Edge Function for daily market prices.
+Portfolio sharing app built with React + Vite, with Supabase Postgres/Auth/Edge Functions.
 
-## Repository status and guardrails
+## Deploy target (primary)
 
-- No runtime secrets are committed to the repo.
-- Local environment files are ignored by Git and must not be committed.
-- Use `.env.example` as the only committed env template.
+This repo is configured for **Cloudflare Pages + Supabase**.
 
-## 1) Local development
+- Package manager: **npm**
+- Build command: `npm ci && npm run build`
+- Build output directory: `dist`
 
-1. Install dependencies:
+## 1) Secrets hygiene policy
 
-   ```bash
-   npm install
-   ```
+- Runtime secrets must never be committed.
+- `.env` and environment variants are gitignored.
+- `.env.example` is the only committed env template.
+- CI fails if:
+  - merge conflict markers are present,
+  - a tracked file named `.env` exists,
+  - obvious leaked secret patterns are detected (`sb_secret_...`, hard-coded service role key assignments).
 
-2. Provide frontend env vars in your shell (or local tooling), then run dev server:
+## 2) Local development
 
-   ```bash
-   export VITE_SUPABASE_URL="https://<project-ref>.supabase.co"
-   export VITE_SUPABASE_PUBLISHABLE_KEY="<supabase-anon-key>"
-   npm run dev
-   ```
+```bash
+npm install
+cp .env.example .env.local
+```
 
-Required frontend env vars:
+Set required frontend environment variables (example):
+
+```bash
+export VITE_SUPABASE_URL="https://<project-ref>.supabase.co"
+export VITE_SUPABASE_PUBLISHABLE_KEY="<supabase-anon-key>"
+npm run dev
+```
+
+Required frontend variables:
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 
-If either variable is missing, the app renders a friendly setup error screen with fix instructions instead of a blank page.
+## 3) Cloudflare Pages deployment
 
-## 2) AWS Amplify deployment (Vite SPA)
+Create a Pages project connected to this repository and configure:
 
-This repo includes `amplify.yml` configured for Vite:
+- **Framework preset**: Vite
+- **Build command**: `npm ci && npm run build`
+- **Build output directory**: `dist`
 
-- `npm ci`
-- `npm run build`
-- publish `dist`
+### Environment variables in Cloudflare Pages
 
-Deployment steps:
+In **Cloudflare Dashboard → Pages → <project> → Settings → Variables and Secrets**, add:
 
-1. In AWS Amplify, connect this GitHub repository and select the `main` branch.
-2. Confirm Amplify uses repository `amplify.yml`.
-3. In Amplify **Environment variables**, add:
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_PUBLISHABLE_KEY`
-4. In Amplify **Rewrites and redirects**, add SPA fallback:
-   - Source: `/*`
-   - Target: `/index.html`
-   - Type: `200 (Rewrite)`
-5. Deploy.
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
 
-## 3) Supabase migrations, function deploy, and secrets
+Set values for both **Production** and **Preview** environments.
 
-1. Login and link project:
+### SPA routing
 
-   ```bash
-   supabase login
-   supabase link --project-ref <project-ref>
-   ```
+This repo includes `public/_redirects` with:
 
-2. Apply migrations:
-
-   ```bash
-   supabase db push
-   ```
-
-### DB safety checks before `supabase db push`
-
-Run these checks before applying migrations in shared/prod-like environments:
-
-```sql
--- Duplicate holdings that would violate UNIQUE (portfolio_id, asset_id)
-SELECT portfolio_id, asset_id, COUNT(*) AS duplicates
-FROM public.holdings
-GROUP BY portfolio_id, asset_id
-HAVING COUNT(*) > 1;
-
--- Invalid holding values (must be non-negative)
-SELECT id, portfolio_id, asset_id, quantity, avg_cost
-FROM public.holdings
-WHERE quantity < 0 OR (avg_cost IS NOT NULL AND avg_cost < 0);
+```txt
+/* /index.html 200
 ```
 
-Company metrics note:
+That file is emitted into `dist/_redirects` during Vite build so deep links route to the SPA entrypoint on Pages.
 
-- `company_metrics` create/update/delete is restricted to the row creator (`created_by = auth.uid()`).
-- `company_metrics.source_url` is mandatory for each metric entry.
+## 4) Supabase migrations (ordered + runnable)
 
-3. Deploy Edge Function (`update-prices`):
+Migrations are stored in `supabase/migrations` and ordered by timestamp prefix.
 
-   ```bash
-   supabase functions deploy update-prices --no-verify-jwt
-   ```
+List migration order:
 
-4. Set required Supabase secrets:
+```bash
+ls -1 supabase/migrations/*.sql | sort
+```
 
-   ```bash
-   supabase secrets set TWELVE_DATA_API_KEY=<twelve-data-api-key>
-   supabase secrets set SUPABASE_URL=https://<project-ref>.supabase.co
-   supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
-   ```
+Apply to linked project:
 
-## 4) GitHub Actions secrets and daily cron
+```bash
+supabase login
+supabase link --project-ref <project-ref>
+supabase db push
+```
 
-### CI workflow
+## 5) Supabase Edge Function deployment (`update-prices`)
 
-File: `.github/workflows/ci.yml`
+Deploy function:
 
-- Triggers: push to `main`, pull requests.
-- Runtime: Node.js 20.
-- Commands: `npm ci`, `npm test`, `npm run build`.
-- CI injects placeholder values for:
-  - `VITE_SUPABASE_URL`
-  - `VITE_SUPABASE_PUBLISHABLE_KEY`
+```bash
+supabase functions deploy update-prices --no-verify-jwt
+```
 
-### Daily price update cron
+Set function/runtime secrets:
 
-File: `.github/workflows/daily-price-update.yml`
+```bash
+supabase secrets set TWELVE_DATA_API_KEY=<twelve-data-api-key>
+supabase secrets set SUPABASE_URL=https://<project-ref>.supabase.co
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+```
 
-- Triggers:
-  - `schedule` (daily)
-  - `workflow_dispatch`
-- Calls Supabase Edge Function endpoint: `POST https://<project-ref>.functions.supabase.co/update-prices`
+## 6) Supabase Auth URL configuration (Cloudflare + localhost)
+
+In Supabase Dashboard → **Authentication → URL Configuration**:
+
+1. Set **Site URL** to your Cloudflare Pages production domain, for example:
+   - `https://friends-portfolio-hub.pages.dev`
+   - or your custom domain (recommended)
+2. Add **Redirect URLs** for all active environments, for example:
+   - `https://friends-portfolio-hub.pages.dev`
+   - `https://<preview-subdomain>.pages.dev`
+   - `http://localhost:5173`
+
+## 7) GitHub Actions
+
+### CI
+
+Workflow: `.github/workflows/ci.yml`
+
+Runs:
+
+1. repository safety guards,
+2. `npm ci`,
+3. tests,
+4. build.
+
+### Scheduled price updater
+
+Workflow: `.github/workflows/daily-price-update.yml`
+
+- Trigger: daily cron + manual dispatch
+- Action: `POST` to Supabase function endpoint
 
 Required GitHub repository secrets:
 
 - `SUPABASE_FUNCTION_URL` (example: `https://<project-ref>.functions.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-## 5) Supabase Auth URL configuration for Amplify
+## 8) Copy/paste deployment checklist
 
-In Supabase Dashboard → **Authentication** → **URL Configuration**:
+```bash
+# 1) Install + verify app builds exactly like Cloudflare
+npm ci && npm run build
 
-1. Set **Site URL** to your Amplify production URL (or custom domain).
-2. Add **Redirect URLs** for all active environments, e.g.:
-   - `https://main.<app-id>.amplifyapp.com`
-   - `https://www.yourdomain.com`
-   - `http://localhost:5173`
+# 2) Login + link Supabase project
+supabase login
+supabase link --project-ref <project-ref>
 
-## 6) User onboarding behavior
+# 3) Apply migrations
+supabase db push
 
-- New users with **no portfolios** and `profiles.onboarding_completed = false` are shown a 3-step onboarding flow on Home:
-  1. Create first portfolio (name + base currency)
-  2. Add first holding (symbol + quantity + optional average cost)
-  3. Choose visibility
-- If a user already has a portfolio, onboarding is skipped.
-- Completing the flow sets `profiles.onboarding_completed = true`.
+# 4) Deploy Edge Function
+supabase functions deploy update-prices --no-verify-jwt
 
-## 7) Missing-price behavior
+# 5) Set Edge Function secrets
+supabase secrets set TWELVE_DATA_API_KEY=<twelve-data-api-key>
+supabase secrets set SUPABASE_URL=https://<project-ref>.supabase.co
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+```
 
-- Portfolio total value prefers latest server valuation from `portfolio_valuations`.
-- If no valuation exists yet, UI shows an estimated client-side total marked **Estimated**.
-- Holdings without a latest price are marked **Unpriced** and contribute zero to the estimate.
+Manual dashboard steps remaining:
 
-## 8) Troubleshooting
-
-### Login redirect problems
-
-- Verify Supabase **Site URL** matches your canonical deployed frontend URL.
-- Verify every callback/origin URL is present in Supabase **Redirect URLs**.
-- If using a custom domain on Amplify, include both Amplify domain and custom domain while migrating.
-
-### Cron runs but no prices written
-
-- Confirm GitHub secrets `SUPABASE_FUNCTION_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set.
-- Confirm Supabase function secrets `TWELVE_DATA_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` are set.
-- Check workflow run logs for curl response text.
-- Check Supabase Edge Function logs for upstream API errors.
-
-### Leaderboard empty
-
-- Ensure portfolios and holdings exist.
-- Ensure price updates have run and generated valuation rows.
-- Ensure portfolio visibility and membership rules allow the signed-in user to access the portfolios.
-
-## 9) Manual steps outside git
-
-- [ ] Set Amplify env vars (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`).
-- [ ] Configure Amplify SPA rewrite (`/*` → `/index.html`, 200 rewrite).
-- [ ] Configure Supabase Auth URL settings (Site URL + Redirect URLs).
-- [ ] Set Supabase Edge Function secrets (`TWELVE_DATA_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`).
-- [ ] Set GitHub Actions secrets (`SUPABASE_FUNCTION_URL`, `SUPABASE_SERVICE_ROLE_KEY`).
+- Cloudflare Pages: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in Settings → Variables and Secrets.
+- Supabase Auth: set Site URL + Redirect URLs for Cloudflare production/preview and localhost.
+- GitHub repo secrets: set `SUPABASE_FUNCTION_URL` and `SUPABASE_SERVICE_ROLE_KEY` for scheduled workflow.
