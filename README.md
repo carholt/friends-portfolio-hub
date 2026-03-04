@@ -208,3 +208,29 @@ curl -X POST "https://<project-ref>.functions.supabase.co/price-resolution-diagn
 ```
 
 Response includes which symbols resolve, returned prices, and provider error messages for failed symbols.
+
+## 12) TwelveData symbol validation + price smoke test
+
+Run with a newline-separated ticker file (defaults to `tickers.txt` in repo root):
+
+```bash
+export TWELVEDATA_API_KEY="<your-api-key>"
+npm run validate:twelvedata
+# or provide a custom file path
+npm run validate:twelvedata -- ./path/to/tickers.txt
+```
+
+What it does:
+
+- Resolves each ticker using TwelveData `/stocks?symbol=...`.
+- Recommends a pricing symbol (`SYMBOL` or `SYMBOL:EXCHANGE` when an exchange is required).
+- Calls `/price` in throttled batches (8 symbols/minute, free-tier safe) with retry/backoff on rate limits.
+
+Report statuses:
+
+- `ok`: price returned.
+- `plan_gated`: symbol/exchange requires a higher TwelveData plan.
+- `invalid_symbol`: symbol could not be resolved/priced.
+- `rate_limited`: free-tier credit/rate window exceeded (tool retries before final status).
+
+Security note: the script reads only `TWELVEDATA_API_KEY` from environment variables and does not print the key.
