@@ -1,7 +1,13 @@
 export interface TickerResolutionInput {
   isin: string;
   ticker: string;
+  exchange?: string;
 }
+
+const CANADIAN_MIC_TO_EXCHANGE: Record<string, string> = {
+  XTSE: "TSX",
+  XTSX: "TSXV",
+};
 
 export interface AssetLike {
   id: string;
@@ -26,6 +32,24 @@ export function normalizeTicker(value: string): string {
   return value.trim().toUpperCase();
 }
 
+export function normalizeExchangeCode(value?: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toUpperCase();
+  return normalized || null;
+}
+
+export function exchangeFromMic(value?: string | null): string | null {
+  const mic = normalizeExchangeCode(value);
+  if (!mic) return null;
+  return CANADIAN_MIC_TO_EXCHANGE[mic] || mic;
+}
+
+export function buildProviderSymbol(symbol: string, exchange?: string | null): string {
+  const cleanSymbol = normalizeTicker(symbol);
+  const cleanExchange = normalizeExchangeCode(exchange);
+  return cleanExchange ? `${cleanSymbol}:${cleanExchange}` : cleanSymbol;
+}
+
 export function preserveIsinMetadata(metadata: Record<string, unknown> | null | undefined, isin: string) {
   return {
     ...(metadata || {}),
@@ -45,6 +69,13 @@ export function applyTickerResolutionsToRows(rows: any[], resolutions: Record<st
       metadata_json: preserveIsinMetadata((row.metadata_json as Record<string, unknown> | undefined) ?? {}, isin),
     };
   });
+}
+
+export function extractTickerAndExchange(value: string): { ticker: string; exchange: string | null } {
+  const raw = normalizeTicker(value);
+  if (!raw.includes(":")) return { ticker: raw, exchange: null };
+  const [ticker, exchange] = raw.split(":", 2);
+  return { ticker: normalizeTicker(ticker), exchange: normalizeExchangeCode(exchange) };
 }
 
 export function mergeHoldingsForAssetMigration(sourceHoldings: HoldingLike[], targetHoldings: HoldingLike[]): HoldingMergeResult {

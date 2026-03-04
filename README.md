@@ -171,5 +171,40 @@ Manual dashboard steps remaining:
 - Holdings are now derived from the `transactions` ledger (`buy`, `sell`, `adjust`, `remove`) via DB triggers. Do not write holdings directly from client code.
 - New social table `group_messages` is RLS-protected: only group members can read/write, author/group owner can delete.
 - Use `resolve-asset-ticker` Edge Function for ISIN mapping. Keep `metadata_json.isin` and set `assets.symbol` to pricing ticker.
+- Exchange-aware pricing is supported through `metadata_json.provider_symbol` and `metadata_json.exchange_code` (for example `PAAS:TSX`, `USA:TSXV`). Keep `assets.symbol` as the canonical ticker key and let the resolver manage provider qualification.
 - Client must only use `VITE_SUPABASE_PUBLISHABLE_KEY`. Keep `SUPABASE_SERVICE_ROLE_KEY` in Edge Functions/GitHub secrets only.
 - If group pages show empty boards, confirm user has a `group_members` row and check RLS policies in migrations.
+
+## 10) Ticker/exchange resolution playbook
+
+1. Open a portfolio with `Unpriced` holdings.
+2. Click **Resolve ticker** and use **Suggest**.
+3. Confirm/edit ticker and optionally set exchange code (`TSX`, `TSXV`, etc.).
+4. Save to apply the server-side merge/migration.
+
+The resolver preserves `metadata_json.isin`, writes `metadata_json.provider_symbol`, and safely merges overlapping holdings by portfolio.
+
+## 11) Pricing diagnostics (admin-only dry run)
+
+Deploy function:
+
+```bash
+supabase functions deploy price-resolution-diagnostics --no-verify-jwt
+```
+
+Configure secret token:
+
+```bash
+supabase secrets set PRICE_DIAGNOSTIC_TOKEN=<long-random-token>
+```
+
+Dry-run example:
+
+```bash
+curl -X POST "https://<project-ref>.functions.supabase.co/price-resolution-diagnostics" \
+  -H "content-type: application/json" \
+  -H "x-diagnostic-token: $PRICE_DIAGNOSTIC_TOKEN" \
+  -d '{"symbols":["B",{"symbol":"PAAS","exchange":"TSX"},{"symbol":"USA","exchange":"TSXV"}]}'
+```
+
+Response includes which symbols resolve, returned prices, and provider error messages for failed symbols.

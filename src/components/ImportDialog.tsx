@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { groupNordeaHoldingsByAccount, parseCSV, parseExcelImport, parseJSONImport, validateImportRows, type NordeaAccountGroup } from "@/lib/portfolio-utils";
-import { applyTickerResolutionsToRows, normalizeTicker } from "@/lib/ticker-resolution";
+import { applyTickerResolutionsToRows, extractTickerAndExchange, normalizeTicker } from "@/lib/ticker-resolution";
 import { logAuditAction } from "@/lib/audit";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -189,7 +189,10 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     await supabase.functions.invoke("resolve-asset-ticker", {
       body: {
         mode: "apply",
-        resolutions: resolverItems.map((item) => ({ isin: item.isin, ticker: tickerResolutions[item.isin], name: item.name, mic: item.mic })),
+        resolutions: resolverItems.map((item) => {
+          const parsed = extractTickerAndExchange(tickerResolutions[item.isin] || "");
+          return { isin: item.isin, ticker: parsed.ticker, exchange: parsed.exchange, name: item.name, mic: item.mic };
+        }),
       },
     });
 

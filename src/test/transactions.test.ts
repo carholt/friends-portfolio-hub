@@ -23,4 +23,14 @@ describe("transactions -> holdings calculations", () => {
     expect(result.quantity).toBe(0);
     expect(result.avgCost).toBe(0);
   });
+
+  it("normalizes oversell to zero quantity without negative holdings", () => {
+    const result = calculateHoldingFromTransactions([
+      { type: "buy", quantity: 2, price: 12 },
+      { type: "sell", quantity: -5, price: 10 },
+    ]);
+
+    expect(result.quantity).toBe(0);
+    expect(result.avgCost).toBe(0);
+  });
 });

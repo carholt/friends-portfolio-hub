@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyTickerResolutionsToRows, mergeHoldingsForAssetMigration, preserveIsinMetadata } from "@/lib/ticker-resolution";
+import { applyTickerResolutionsToRows, buildProviderSymbol, exchangeFromMic, extractTickerAndExchange, mergeHoldingsForAssetMigration, preserveIsinMetadata } from "@/lib/ticker-resolution";
 
 describe("ticker resolution utilities", () => {
   it("merges duplicate holdings when resolving ISIN to ticker", () => {
@@ -29,5 +29,11 @@ describe("ticker resolution utilities", () => {
 
     expect(rows[0].symbol).toBe("GWF");
     expect(preserveIsinMetadata(rows[0].metadata_json, "CA40066W1068")).toMatchObject({ isin: "CA40066W1068", source: "nordea" });
+  });
+
+  it("builds exchange-qualified symbols for Twelve Data when needed", () => {
+    expect(exchangeFromMic("XTSE")).toBe("TSX");
+    expect(buildProviderSymbol("PAAS", "tsx")).toBe("PAAS:TSX");
+    expect(extractTickerAndExchange("ag:tsxv")).toEqual({ ticker: "AG", exchange: "TSXV" });
   });
 });

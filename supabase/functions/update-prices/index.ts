@@ -6,7 +6,8 @@ type Asset = {
   symbol: string;
   asset_type: string;
   currency: string;
-  metadata_json?: { isin?: string } | null;
+  exchange?: string | null;
+  metadata_json?: { isin?: string; provider_symbol?: string; exchange_code?: string } | null;
 };
 
 const corsHeaders = {
@@ -15,6 +16,13 @@ const corsHeaders = {
 };
 
 const CHUNK_SIZE = 8;
+const normalize = (value?: string | null) => (value || "").trim().toUpperCase();
+const buildProviderSymbol = (asset: Asset) => {
+  const configured = normalize(asset.metadata_json?.provider_symbol);
+  if (configured) return configured;
+  const exchange = normalize(asset.metadata_json?.exchange_code || asset.exchange);
+  return exchange ? `${normalize(asset.symbol)}:${exchange}` : normalize(asset.symbol);
+};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,7 +62,7 @@ Deno.serve(async (req) => {
 
     const { data: assets, error: assetsError } = await supabase
       .from("assets")
-      .select("id, symbol, asset_type, currency, metadata_json")
+      .select("id, symbol, asset_type, currency, exchange, metadata_json")
       .in("id", uniqueAssetIds);
 
     if (assetsError) throw assetsError;
@@ -83,7 +91,7 @@ Deno.serve(async (req) => {
         continue;
       }
       const symbols = priceableChunk
-        .map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol))
+        .map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : buildProviderSymbol(asset)))
         .join(",");
 
       const response = await fetch(
@@ -92,7 +100,7 @@ Deno.serve(async (req) => {
       const payload = await response.json();
 
       for (const asset of priceableChunk) {
-        const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : asset.symbol;
+        const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : buildProviderSymbol(asset);
         const item = priceableChunk.length === 1 ? payload : payload[key];
         const parsedPrice = Number(item?.price);
 
