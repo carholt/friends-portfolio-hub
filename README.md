@@ -165,3 +165,11 @@ Manual dashboard steps remaining:
 - Cloudflare Pages: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in Settings → Variables and Secrets.
 - Supabase Auth: set Site URL + Redirect URLs for Cloudflare production/preview and localhost.
 - GitHub repo secrets: set `SUPABASE_FUNCTION_URL` and `SUPABASE_SERVICE_ROLE_KEY` for scheduled workflow.
+
+## 9) Portfolio Tracker 2026 notes & pitfalls
+
+- Holdings are now derived from the `transactions` ledger (`buy`, `sell`, `adjust`, `remove`) via DB triggers. Do not write holdings directly from client code.
+- New social table `group_messages` is RLS-protected: only group members can read/write, author/group owner can delete.
+- Use `resolve-asset-ticker` Edge Function for ISIN mapping. Keep `metadata_json.isin` and set `assets.symbol` to pricing ticker.
+- Client must only use `VITE_SUPABASE_PUBLISHABLE_KEY`. Keep `SUPABASE_SERVICE_ROLE_KEY` in Edge Functions/GitHub secrets only.
+- If group pages show empty boards, confirm user has a `group_members` row and check RLS policies in migrations.
