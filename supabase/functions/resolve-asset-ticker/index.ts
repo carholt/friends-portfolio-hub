@@ -16,19 +16,43 @@ type Resolution = {
 };
 
 const normalize = (v: string) => v.trim().toUpperCase();
+const normalizeExchange = (v?: string | null) => (v || "").trim().toUpperCase() || null;
+const micToExchange: Record<string, string> = { XTSE: "TSX", XTSX: "TSXV" };
+const providerSymbol = (ticker: string, exchange?: string | null) => {
+  const cleanExchange = normalizeExchange(exchange);
+  return cleanExchange ? `${normalize(ticker)}:${cleanExchange}` : normalize(ticker);
+};
+
+const exchangeFromSuggestion = (item: Record<string, unknown>) => {
+  const explicit = normalizeExchange(String(item.exchange || item.exchange_code || ""));
+  if (explicit) return explicit;
+  const mic = normalizeExchange(String(item.mic_code || item.mic || ""));
+  if (mic && micToExchange[mic]) return micToExchange[mic];
+  return mic;
+};
 
 async function suggestTicker(apiKey: string, isin: string, name: string) {
   const byIsin = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(isin)}&apikey=${apiKey}`);
   const isinPayload = await byIsin.json();
   const isinData = Array.isArray(isinPayload?.data) ? isinPayload.data : [];
   if (isinData.length > 0) {
-    return { suggested: String(isinData[0].symbol || "").toUpperCase(), suggestions: isinData.slice(0, 3) };
+    const normalized = isinData.slice(0, 6).map((entry: Record<string, unknown>) => ({
+      ...entry,
+      exchange_code: exchangeFromSuggestion(entry),
+    }));
+    const first = normalized[0];
+    return { suggested: providerSymbol(String(first.symbol || ""), String(first.exchange_code || "")), suggestions: normalized.slice(0, 3) };
   }
 
   const byName = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(name)}&apikey=${apiKey}`);
   const namePayload = await byName.json();
   const nameData = Array.isArray(namePayload?.data) ? namePayload.data : [];
-  return { suggested: String(nameData[0]?.symbol || "").toUpperCase(), suggestions: nameData.slice(0, 3) };
+  const normalized = nameData.slice(0, 6).map((entry: Record<string, unknown>) => ({
+    ...entry,
+    exchange_code: exchangeFromSuggestion(entry),
+  }));
+  const first = normalized[0];
+  return { suggested: providerSymbol(String(first?.symbol || ""), String(first?.exchange_code || "")), suggestions: normalized.slice(0, 3) };
 }
 
 Deno.serve(async (req) => {
@@ -63,6 +87,8 @@ Deno.serve(async (req) => {
     for (const item of resolutions) {
       const isin = normalize(item.isin || "");
       const ticker = normalize(item.ticker || "");
+      const exchange = normalizeExchange(item.exchange || null) || normalizeExchange(item.mic ? micToExchange[normalize(item.mic)] || item.mic : null);
+      const resolvedProviderSymbol = providerSymbol(ticker, exchange);
       if (!isin || !ticker) continue;
 
       const { data: sourceAsset } = await service.from("assets").select("id,symbol,name,asset_type,currency,exchange,metadata_json").eq("symbol", isin).maybeSingle();
@@ -83,10 +109,17 @@ Deno.serve(async (req) => {
         }
 
         if (canRename) {
-          const mergedMetadata = { ...(sourceAsset.metadata_json || {}), isin, source: "nordea", ...(item.mic ? { mic: item.mic } : {}) };
+          const mergedMetadata = {
+            ...(sourceAsset.metadata_json || {}),
+            isin,
+            source: "nordea",
+            provider_symbol: resolvedProviderSymbol,
+            ...(item.mic ? { mic: normalize(item.mic) } : {}),
+            ...(exchange ? { exchange_code: exchange } : {}),
+          };
           const { data: updated } = await service
             .from("assets")
-            .update({ symbol: ticker, metadata_json: mergedMetadata, name: item.name || sourceAsset.name })
+            .update({ symbol: ticker, exchange: exchange || sourceAsset.exchange || null, metadata_json: mergedMetadata, name: item.name || sourceAsset.name })
             .eq("id", sourceAsset.id)
             .select("id")
             .single();
@@ -95,13 +128,19 @@ Deno.serve(async (req) => {
       }
 
       if (!targetAssetId) {
-        const baseMetadata = { isin, source: "nordea", ...(item.mic ? { mic: item.mic } : {}) };
+        const baseMetadata = {
+          isin,
+          source: "nordea",
+          provider_symbol: resolvedProviderSymbol,
+          ...(item.mic ? { mic: normalize(item.mic) } : {}),
+          ...(exchange ? { exchange_code: exchange } : {}),
+        };
         const { data: created } = await service.from("assets").insert({
           symbol: ticker,
           name: item.name || ticker,
           asset_type: sourceAsset?.asset_type || "stock",
           currency: item.currency || sourceAsset?.currency || "USD",
-          exchange: item.exchange || sourceAsset?.exchange || null,
+          exchange: exchange || sourceAsset?.exchange || null,
           metadata_json: baseMetadata,
         }).select("id").single();
         targetAssetId = created?.id;

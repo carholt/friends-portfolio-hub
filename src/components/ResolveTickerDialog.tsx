@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { normalizeTicker } from "@/lib/ticker-resolution";
+import { buildProviderSymbol, exchangeFromMic, extractTickerAndExchange, normalizeExchangeCode, normalizeTicker } from "@/lib/ticker-resolution";
 import { toast } from "sonner";
 
 interface Props {
@@ -17,8 +17,9 @@ interface Props {
 
 export default function ResolveTickerDialog({ open, onOpenChange, isin, name, mic, onResolved }: Props) {
   const [ticker, setTicker] = useState("");
+  const [exchange, setExchange] = useState("");
   const [busy, setBusy] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<Array<{ symbol: string; exchange?: string }>>([]);
 
   const onSuggest = async () => {
     const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", { body: { mode: "suggest", isin, name, mic } });
@@ -26,27 +27,35 @@ export default function ResolveTickerDialog({ open, onOpenChange, isin, name, mi
       toast.error("Failed to fetch ticker suggestions");
       return;
     }
-    const symbols = ((data?.suggestions || []) as any[]).map((item) => String(item.symbol || "").toUpperCase()).filter(Boolean).slice(0, 3);
+    const symbols = ((data?.suggestions || []) as any[])
+      .map((item) => ({ symbol: normalizeTicker(String(item.symbol || "")), exchange: normalizeExchangeCode(String(item.exchange || item.exchange_code || "")) || undefined }))
+      .filter((item) => item.symbol)
+      .slice(0, 3);
     setSuggestions(symbols);
-    if (data?.suggested) setTicker(normalizeTicker(String(data.suggested)));
+    if (data?.suggested) {
+      const parsed = extractTickerAndExchange(String(data.suggested));
+      setTicker(parsed.ticker);
+      setExchange(parsed.exchange || exchangeFromMic(mic) || "");
+    }
   };
 
   const onApply = async () => {
     const cleanTicker = normalizeTicker(ticker);
+    const cleanExchange = normalizeExchangeCode(exchange);
     if (!cleanTicker) {
       toast.error("Ticker is required");
       return;
     }
     setBusy(true);
     const { error } = await supabase.functions.invoke("resolve-asset-ticker", {
-      body: { mode: "apply", resolutions: [{ isin, ticker: cleanTicker, name, mic }] },
+      body: { mode: "apply", resolutions: [{ isin, ticker: cleanTicker, name, mic, exchange: cleanExchange }] },
     });
     setBusy(false);
     if (error) {
       toast.error(error.message);
       return;
     }
-    toast.success(`Resolved ${isin} to ${cleanTicker}`);
+    toast.success(`Resolved ${isin} to ${buildProviderSymbol(cleanTicker, cleanExchange)}`);
     onResolved();
     onOpenChange(false);
   };
@@ -59,10 +68,12 @@ export default function ResolveTickerDialog({ open, onOpenChange, isin, name, mi
           <p className="text-sm">{name}</p>
           <p className="text-xs text-muted-foreground">ISIN: {isin}</p>
           <Input value={ticker} onChange={(e) => setTicker(normalizeTicker(e.target.value))} placeholder="Ticker (required for pricing)" />
+          <Input value={exchange} onChange={(e) => setExchange(normalizeTicker(e.target.value))} placeholder="Exchange code (optional, e.g. TSX or TSXV)" />
           <div className="flex gap-2">
             <Button variant="outline" onClick={onSuggest}>Suggest</Button>
-            {suggestions.length > 0 && <p className="text-xs self-center">{suggestions.join(", ")}</p>}
+            {suggestions.length > 0 && <p className="text-xs self-center">{suggestions.map((item) => buildProviderSymbol(item.symbol, item.exchange)).join(", ")}</p>}
           </div>
+          <p className="text-xs text-muted-foreground">Provider symbol preview: {buildProviderSymbol(ticker || "—", normalizeExchangeCode(exchange))}</p>
           <Button onClick={onApply} disabled={busy}>{busy ? "Resolving..." : "Save"}</Button>
         </div>
       </DialogContent>
