@@ -45,3 +45,25 @@ export function calculateHoldingFromTransactions(txs: LedgerTransaction[]): Hold
     { quantity: 0, avgCost: 0, realizedPl: 0 } as HoldingSnapshot,
   );
 }
+
+export function calculateHoldingWithFees(txs: Array<{ type: "buy" | "sell"; quantity: number; price: number; fees?: number }>) {
+  let quantity = 0;
+  let avgCost = 0;
+  let costBasis = 0;
+
+  for (const tx of txs) {
+    const q = Math.max(Number(tx.quantity), 0);
+    const fees = Number(tx.fees || 0);
+    if (tx.type === "buy") {
+      quantity += q;
+      costBasis += q * Number(tx.price) + fees;
+      avgCost = quantity > 0 ? costBasis / quantity : 0;
+    } else {
+      quantity = Math.max(quantity - q, 0);
+      costBasis = Math.max(costBasis - q * avgCost, 0);
+      avgCost = quantity > 0 ? costBasis / quantity : 0;
+    }
+  }
+
+  return { quantity, avgCost, costBasis };
+}
