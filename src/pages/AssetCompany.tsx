@@ -16,6 +16,7 @@ import { requestCompanyAiReport } from "@/lib/company-ai-report-client";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { env } from "@/config/env";
 
 type MetricRow = {
   id: string;
@@ -97,9 +98,9 @@ export default function AssetCompanyPage() {
   const latestCompleted = reports.find((row) => row.status === "completed" && isCompanyAiReport(row.report));
   const latestReport = latestCompleted?.report as CompanyAiReport | undefined;
 
-  const { data: hasAccess = false, refetch: refetchAccess } = useQuery({
-    queryKey: ["report-access", user?.id, latestCompleted?.id],
-    enabled: !!user?.id && !!latestCompleted?.id,
+  const { data: hasAccess = !env.paywallEnabled, refetch: refetchAccess } = useQuery({
+    queryKey: ["report-access", user?.id, latestCompleted?.id, env.paywallEnabled],
+    enabled: env.paywallEnabled && !!user?.id && !!latestCompleted?.id,
     queryFn: async () => {
       const { data: access, error: accessError } = await (supabase as any).rpc("user_has_access_to_report", {
         _user_id: user!.id,
@@ -158,7 +159,7 @@ export default function AssetCompanyPage() {
   });
 
   const statusLabel = latest ? `${latest.status}${latest.error ? `: ${latest.error}` : ""}` : "No report yet";
-  const showPaywall = !!user && !!latestReport && !hasAccess;
+  const showPaywall = env.paywallEnabled && !!user && !!latestReport && !hasAccess;
 
   if (isLoading) return <AppLayout><PageSkeleton rows={3} /></AppLayout>;
   if (error) return <AppLayout><ErrorState message={(error as Error).message} onAction={() => refetch()} /></AppLayout>;
@@ -166,19 +167,21 @@ export default function AssetCompanyPage() {
 
   return (
     <AppLayout>
-      <Dialog open={showPaywall}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Unlock AI Report</DialogTitle>
-            <DialogDescription>
-              This report is paywalled. Purchase access for {unlockPrice > 0 ? `${unlockPrice.toFixed(2)} ${reportCurrency}` : "a one-time fee"}.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button onClick={() => purchaseMutation.mutate()} disabled={purchaseMutation.isPending}>Purchase report</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {env.paywallEnabled && (
+        <Dialog open={showPaywall}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Unlock AI Report</DialogTitle>
+              <DialogDescription>
+                This report is paywalled. Purchase access for {unlockPrice > 0 ? `${unlockPrice.toFixed(2)} ${reportCurrency}` : "a one-time fee"}.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button onClick={() => purchaseMutation.mutate()} disabled={purchaseMutation.isPending}>Purchase report</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       <div className="space-y-4">
         <Card><CardHeader><CardTitle>{data.company.name} ({data.asset.symbol})</CardTitle></CardHeader><CardContent className="grid gap-2 sm:grid-cols-2 text-sm"><p>Exchange: {data.asset.exchange || "—"}</p><p>Lifecycle stage: {data.company.lifecycle_stage}</p><p>Tier: {data.company.tier}</p><p>Jurisdiction: {data.company.jurisdiction || "—"}</p><p>Started: {data.company.started_year || "—"}</p></CardContent></Card>
