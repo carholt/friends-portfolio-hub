@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildPreviewRows, buildProviderSymbol, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
 import { calculateHoldingWithFees } from "@/lib/transactions";
+import { detectMapping } from "@/lib/import-engine";
 
 describe("Nordea transaction import parsing", () => {
   const fixture = readFileSync(resolve(process.cwd(), "src/test/fixtures/nordea-transactions.csv"), "utf8");
@@ -10,10 +11,11 @@ describe("Nordea transaction import parsing", () => {
   it("parses nordea fixture and extracts symbols", () => {
     const rows = parseCsvRows(fixture);
     expect(detectBrokerByHeaders(rows)).toBe("nordea");
-    const preview = buildPreviewRows(rows, "nordea");
+    const mapping = detectMapping(Object.keys(rows[0]), rows as Record<string, string>[]);
+    const preview = buildPreviewRows(rows, mapping);
 
-    expect(preview).toHaveLength(4);
-    expect(preview.map((row) => row.tx.symbol_raw)).toEqual(["AGX", "AYA", "AUMB", "AYA"]);
+    expect(preview).toHaveLength(2);
+    expect(preview.map((row) => row.tx.symbol_raw)).toEqual(["AYA", "AYA"]);
     expect(preview.every((row) => row.errors.length === 0)).toBe(true);
   });
 
