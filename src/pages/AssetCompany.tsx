@@ -2,53 +2,19 @@ import { useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import AppLayout from "@/components/AppLayout";
 import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { ErrorState } from "@/components/feedback/ErrorState";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { PageSkeleton } from "@/components/feedback/PageSkeleton";
-
-const investmentHeaders = [
-  "TICKER",
-  "NAME",
-  "BUCKET",
-  "TYPE",
-  "Weight",
-  "SHARES",
-  "AVERAGE BUY PRICE",
-  "INVESTMENT",
-  "PROJECTED PRICE",
-  "POTENTIAL UPSIDE",
-  "ROI",
-  "Rating",
-  "INVESTMENT RECOMMENDATION",
-  "Properties / Ownership",
-  "Management Team",
-  "Share Structure",
-  "Location",
-  "Projected Growth",
-  "Market Buzz",
-  "Cost Structure / Financing",
-  "Cash / Debt Position",
-  "Low valuation Estimate",
-  "High Valuation Estimate",
-] as const;
-
-const helperMetricMap: Record<string, string[]> = {
-  "Projected Growth": ["projected_growth", "growth", "production_growth"],
-  "Market Buzz": ["market_buzz", "sentiment", "news_sentiment"],
-  "Cost Structure / Financing": ["all_in_sustaining_cost", "opex", "financing"],
-  "Cash / Debt Position": ["cash", "net_debt", "debt"],
-  "Low valuation Estimate": ["valuation_low", "target_price_low"],
-  "High Valuation Estimate": ["valuation_high", "target_price_high"],
-};
-
-const keyFromLabel = (label: string) => label.toLowerCase().replace(/\s+/g, "_").replace(/\//g, "_").replace(/[^a-z_]/g, "");
+import { isCompanyAiReport, type CompanyAiReport } from "@/lib/company-ai-report";
+import { requestCompanyAiReport } from "@/lib/company-ai-report-client";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 type MetricRow = {
   id: string;
@@ -60,15 +26,49 @@ type MetricRow = {
   source_title: string | null;
 };
 
+type AiReportRow = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  created_at: string;
+  completed_at: string | null;
+  report: unknown;
+  sources: unknown;
+  error: string | null;
+  assumptions: Record<string, unknown>;
+};
+
+const reportFields: Array<[label: string, key: keyof CompanyAiReport]> = [
+  ["ticker", "ticker"],
+  ["name", "name"],
+  ["bucket", "bucket"],
+  ["type", "type"],
+  ["properties_ownership", "properties_ownership"],
+  ["management_team", "management_team"],
+  ["share_structure", "share_structure"],
+  ["location", "location"],
+  ["projected_growth", "projected_growth"],
+  ["market_buzz", "market_buzz"],
+  ["cost_structure_financing", "cost_structure_financing"],
+  ["cash_debt_position", "cash_debt_position"],
+  ["low_valuation_estimate", "low_valuation_estimate"],
+  ["high_valuation_estimate", "high_valuation_estimate"],
+  ["projected_price", "projected_price"],
+  ["investment_recommendation", "investment_recommendation"],
+  ["rating", "rating"],
+  ["rationale", "rationale"],
+  ["key_risks", "key_risks"],
+  ["key_catalysts", "key_catalysts"],
+  ["last_updated", "last_updated"],
+];
+
 export default function AssetCompanyPage() {
   const { user } = useAuth();
   const { symbol } = useParams<{ symbol: string }>();
-  const [gold, setGold] = useState("2200");
-  const [silver, setSilver] = useState("25");
+  const queryClient = useQueryClient();
+  const [goldPrice, setGoldPrice] = useState("2200");
+  const [silverPrice, setSilverPrice] = useState("25");
+  const [targetMultiple, setTargetMultiple] = useState("120");
   const [discountRate, setDiscountRate] = useState("8");
-  const [multiple, setMultiple] = useState("120");
-  const [sharesOutstanding, setSharesOutstanding] = useState("");
-  const [aiPrompt, setAiPrompt] = useState("");
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["company", symbol],
@@ -82,74 +82,60 @@ export default function AssetCompanyPage() {
     }
   });
 
-  const estimates = useMemo(() => {
-    const g = Number(gold) || 0;
-    const s = Number(silver) || 0;
-    const d = Number(discountRate) || 0;
-    const m = Number(multiple) || 0;
-    const shares = Number(sharesOutstanding) || 0;
-    const impliedEV = ((g * 0.6) + (s * 0.4)) * m;
-    const impliedMarketCap = impliedEV * (1 - d / 100);
-    const impliedPricePerShare = shares > 0 ? impliedMarketCap / shares : null;
-    return { impliedEV, impliedMarketCap, impliedPricePerShare };
-  }, [gold, silver, discountRate, multiple, sharesOutstanding]);
+  const { data: reports = [] } = useQuery({
+    queryKey: ["company-ai-reports", data?.asset?.id],
+    enabled: !!data?.asset?.id,
+    refetchInterval: (query) => {
+      const rows = (query.state.data as AiReportRow[] | undefined) ?? [];
+      const pending = rows.some((row) => row.status === "queued" || row.status === "running");
+      return pending ? 3000 : false;
+    },
+    queryFn: async () => {
+      const { data: rows, error: reportsError } = await (supabase as any)
+        .from("company_ai_reports")
+        .select("id,status,created_at,completed_at,report,sources,error,assumptions")
+        .eq("asset_id", data!.asset!.id)
+        .order("created_at", { ascending: false })
+        .limit(5);
+      if (reportsError) throw reportsError;
+      return (rows || []) as AiReportRow[];
+    }
+  });
 
-  const metricLookup = useMemo(() => {
-    const byKey = new Map<string, string>();
-    (data?.metrics || []).forEach((metric: MetricRow) => {
-      if (metric.metric_key) {
-        byKey.set(String(metric.metric_key).toLowerCase(), `${metric.value_number}${metric.unit ? ` ${metric.unit}` : ""}`.trim());
-      }
-    });
-    return byKey;
-  }, [data?.metrics]);
+  const latest = reports[0] || null;
+  const latestCompleted = reports.find((row) => row.status === "completed" && isCompanyAiReport(row.report));
+  const latestReport = latestCompleted?.report as CompanyAiReport | undefined;
 
-  const helperValues = useMemo(() => {
-    return investmentHeaders.reduce<Record<string, string>>((acc, header) => {
-      const aliasKeys = helperMetricMap[header] ?? [keyFromLabel(header)];
-      const metricValue = aliasKeys.map((k) => metricLookup.get(k)).find(Boolean);
-      acc[header] = metricValue || "Behöver AI/research";
-      return acc;
-    }, {
-      TICKER: data?.asset?.symbol || "—",
-      NAME: data?.company?.name || "—",
-      BUCKET: data?.company?.tier || "—",
-      TYPE: data?.company?.lifecycle_stage || "—",
-    });
-  }, [data?.asset?.symbol, data?.company?.lifecycle_stage, data?.company?.name, data?.company?.tier, metricLookup]);
+  const generateMutation = useMutation({
+    mutationFn: async ({ mode, force }: { mode: "standard" | "quick"; force?: boolean }) => {
+      if (!data?.asset?.id) return;
+      const assumptions = {
+        gold_price_usd: Number(goldPrice) || null,
+        silver_price_usd: Number(silverPrice) || null,
+        target_multiple: Number(targetMultiple) || null,
+        discount_rate: Number(discountRate) || null,
+        mode,
+        force: !!force,
+      };
 
-  const operationalSummary = useMemo(() => {
-    const keys = {
-      productionStatus: ["production_status", "in_production", "phase"],
-      productionTimeline: ["production_start", "first_production_date", "timeline"],
-      quarterlyUpdate: ["latest_quarter", "revenue", "eps", "quarterly_update"],
-    };
+      const reportId = await requestCompanyAiReport({
+        assetId: data.asset.id,
+        portfolioId: null,
+        assumptions,
+      });
 
-    const pick = (aliases: string[]) => aliases.map((alias) => metricLookup.get(alias)).find(Boolean) || "Behöver AI/research";
+      const { error: invokeError } = await supabase.functions.invoke("company-ai-report", {
+        body: { report_id: reportId },
+      });
+      if (invokeError) throw invokeError;
+      return reportId;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["company-ai-reports", data?.asset?.id] });
+    }
+  });
 
-    return {
-      productionStatus: pick(keys.productionStatus),
-      productionTimeline: pick(keys.productionTimeline),
-      quarterlyUpdate: pick(keys.quarterlyUpdate),
-    };
-  }, [metricLookup]);
-
-  const generatePrompt = () => {
-    if (!data?.company || !data.asset) return;
-    const prompt = [
-      `Analysera bolaget ${data.company.name} (${data.asset.symbol}) och fyll i alla fält nedan med senaste tillgängliga fakta och källor:`,
-      investmentHeaders.join(" | "),
-      "",
-      "Besvara dessutom:",
-      "- Är bolaget i produktion just nu?",
-      "- Om nej, när förväntas produktionsstart och vilka milstolpar återstår?",
-      "- Hur gick senaste kvartalsrapporten (intäkter, resultat, kassaflöde, guidning)?",
-      "- Största risker och triggers kommande 12 månader.",
-      "",
-      "Använd korta, tydliga punkter och markera osäker data med 'ej verifierat'.",
-    ].join("\n");
-    setAiPrompt(prompt);
-  };
+  const statusLabel = latest ? `${latest.status}${latest.error ? `: ${latest.error}` : ""}` : "No report yet";
 
   if (isLoading) return <AppLayout><PageSkeleton rows={3} /></AppLayout>;
   if (error) return <AppLayout><ErrorState message={error.message} onAction={() => refetch()} /></AppLayout>;
@@ -161,58 +147,87 @@ export default function AssetCompanyPage() {
         <Card><CardHeader><CardTitle>{data.company.name} ({data.asset.symbol})</CardTitle></CardHeader><CardContent className="grid gap-2 sm:grid-cols-2 text-sm"><p>Exchange: {data.asset.exchange || "—"}</p><p>Lifecycle stage: {data.company.lifecycle_stage}</p><p>Tier: {data.company.tier}</p><p>Jurisdiction: {data.company.jurisdiction || "—"}</p><p>Started: {data.company.started_year || "—"}</p></CardContent></Card>
 
         <Card><CardHeader><CardTitle>Metrics</CardTitle></CardHeader><CardContent>
-          <Table><TableHeader><TableRow><TableHead>Metric</TableHead><TableHead>Value</TableHead><TableHead>As of</TableHead><TableHead>Source</TableHead></TableRow></TableHeader><TableBody>{data.metrics.map((m: MetricRow) => <TableRow key={m.id}><TableCell>{m.metric_key}</TableCell><TableCell>{m.value_number} {m.unit || ""}</TableCell><TableCell>{m.as_of_date}</TableCell><TableCell><a className="underline" href={m.source_url} target="_blank">{m.source_title || "Source"}</a></TableCell></TableRow>)}</TableBody></Table>
-          {user && <p className="mt-2 text-xs text-muted-foreground">Metrics can only be created/edited/deleted by the original creator, and every metric requires a source URL.</p>}
+          <Table><TableHeader><TableRow><TableHead>Metric</TableHead><TableHead>Value</TableHead><TableHead>As of</TableHead><TableHead>Source</TableHead></TableRow></TableHeader><TableBody>{data.metrics.map((m: MetricRow) => <TableRow key={m.id}><TableCell>{m.metric_key}</TableCell><TableCell>{m.value_number} {m.unit || ""}</TableCell><TableCell>{m.as_of_date}</TableCell><TableCell><a className="underline" href={m.source_url || "#"} target="_blank">{m.source_title || "Source"}</a></TableCell></TableRow>)}</TableBody></Table>
         </CardContent></Card>
 
-        <Card><CardHeader><CardTitle>Scenario panel (Estimate)</CardTitle></CardHeader><CardContent className="space-y-2"><div className="grid gap-2 sm:grid-cols-3"><Input value={gold} onChange={(e) => setGold(e.target.value)} placeholder="Gold price" /><Input value={silver} onChange={(e) => setSilver(e.target.value)} placeholder="Silver price" /><Input value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} placeholder="Discount rate" /><Input value={multiple} onChange={(e) => setMultiple(e.target.value)} placeholder="EV/oz multiple" /><Input value={sharesOutstanding} onChange={(e) => setSharesOutstanding(e.target.value)} placeholder="Shares outstanding (optional)" /></div><p className="text-sm">Estimate: Implied EV = {estimates.impliedEV.toFixed(2)}</p><p className="text-sm">Estimate: Implied market cap = {estimates.impliedMarketCap.toFixed(2)}</p><p className="text-sm">Estimate: Implied price/share = {estimates.impliedPricePerShare == null ? "N/A" : estimates.impliedPricePerShare.toFixed(4)}</p></CardContent></Card>
+        <Card>
+          <CardHeader><CardTitle>AI report assumptions</CardTitle></CardHeader>
+          <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <Input value={goldPrice} onChange={(e) => setGoldPrice(e.target.value)} placeholder="gold_price_usd" />
+            <Input value={silverPrice} onChange={(e) => setSilverPrice(e.target.value)} placeholder="silver_price_usd" />
+            <Input value={targetMultiple} onChange={(e) => setTargetMultiple(e.target.value)} placeholder="target_multiple" />
+            <Input value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} placeholder="discount_rate" />
+          </CardContent>
+        </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>AI Helper (Company profiles)</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>AI helper workflow (server-side)</CardTitle></CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={generatePrompt}>Skapa AI-underlag</Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => aiPrompt && navigator.clipboard.writeText(aiPrompt)}
-                disabled={!aiPrompt}
-              >
-                Kopiera prompt
-              </Button>
+            <div className="flex flex-wrap gap-2 items-center">
+              <Button onClick={() => generateMutation.mutate({ mode: "standard" })} disabled={!user || generateMutation.isPending}>Generate AI report</Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" disabled={!user || generateMutation.isPending}>Regenerate</Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => generateMutation.mutate({ mode: "standard", force: true })}>Standard (web search)</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => generateMutation.mutate({ mode: "quick", force: true })}>Quick (context only)</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <p className="text-sm text-muted-foreground">Status: {statusLabel}</p>
             </div>
 
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Field</TableHead>
-                    <TableHead>Value</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {investmentHeaders.map((header) => (
-                    <TableRow key={header}>
-                      <TableCell className="font-medium">{header}</TableCell>
-                      <TableCell>{helperValues[header]}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            {latestReport && (
+              <>
+                <div className="grid gap-2 md:grid-cols-3">
+                  <Card><CardHeader><CardTitle className="text-base">Rating</CardTitle></CardHeader><CardContent>{latestReport.rating}</CardContent></Card>
+                  <Card><CardHeader><CardTitle className="text-base">Bucket / Type</CardTitle></CardHeader><CardContent>{latestReport.bucket} / {latestReport.type}</CardContent></Card>
+                  <Card><CardHeader><CardTitle className="text-base">Projected price range</CardTitle></CardHeader><CardContent>{latestReport.low_valuation_estimate ?? "—"} - {latestReport.high_valuation_estimate ?? "—"}</CardContent></Card>
+                </div>
 
-            <div className="grid gap-2 text-sm">
-              <p><span className="font-medium">Produktion:</span> {operationalSummary.productionStatus}</p>
-              <p><span className="font-medium">När går de i produktion:</span> {operationalSummary.productionTimeline}</p>
-              <p><span className="font-medium">Senaste kvartalsrapport:</span> {operationalSummary.quarterlyUpdate}</p>
-            </div>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader><TableRow><TableHead>Field</TableHead><TableHead>Value</TableHead></TableRow></TableHeader>
+                    <TableBody>
+                      {reportFields.map(([label, key]) => (
+                        <TableRow key={label}>
+                          <TableCell className="font-medium">{label}</TableCell>
+                          <TableCell>{Array.isArray(latestReport[key]) ? (latestReport[key] as string[]).join(", ") : String(latestReport[key] ?? "—")}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
 
-            <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Klistra in prompten i valfri AI för att få en uppdaterad bolagsanalys med källor.</p>
-              <Textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="AI prompt visas här..." className="min-h-[220px]" />
-            </div>
+                <div>
+                  <h3 className="font-medium mb-2">Sources</h3>
+                  <ul className="space-y-2 text-sm">
+                    {latestReport.sources.map((source) => (
+                      <li key={`${source.url}-${source.title}`}>
+                        <a href={source.url} target="_blank" className="underline">{source.title}</a>
+                        <p className="text-muted-foreground">{source.snippet}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </>
+            )}
+
+            <Accordion type="single" collapsible>
+              <AccordionItem value="history">
+                <AccordionTrigger>Compare previous (report history)</AccordionTrigger>
+                <AccordionContent>
+                  <ul className="space-y-2 text-sm">
+                    {reports.map((row) => (
+                      <li key={row.id} className="rounded border p-2">
+                        <p className="font-medium">{new Date(row.created_at).toLocaleString()} · {row.status}</p>
+                        <p className="text-muted-foreground">{row.error || "No error"}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           </CardContent>
         </Card>
       </div>
