@@ -24,10 +24,20 @@ jobs:
           endpoint="${SUPABASE_FUNCTION_URL%/}/update-prices"
           echo "Calling ${endpoint}"
 
-          response=$(curl --silent --show-error --fail \
+          http_code=$(curl --silent --show-error \
             --request POST "${endpoint}" \
             --header "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            --header "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
             --header "Content-Type: application/json" \
-            --data '{}')
+            --data '{}' \
+            --write-out "%{http_code}" \
+            --output /tmp/resp.json)
 
-          echo "Edge function response: ${response}"
+          echo "HTTP ${http_code}"
+          echo "Response:"
+          cat /tmp/resp.json
+          echo
+
+          if [ "${http_code}" -ge 400 ]; then
+            exit 1
+          fi
