@@ -27,11 +27,13 @@ export default function PortfolioDetail() {
   const [showTxImport, setShowTxImport] = useState(false);
   const [resolveAsset, setResolveAsset] = useState<any | null>(null);
   const [tradeType, setTradeType] = useState<TradeType | null>(null);
+  const [refreshingClassifications, setRefreshingClassifications] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["portfolio", id],
     queryFn: async () => {
       const { data: portfolio } = await supabase.from("portfolios").select("*").eq("id", id!).single();
+      const { data: auth } = await supabase.auth.getUser();
       const { data: holdings, count } = await supabase.from("holdings").select("*, asset:assets(*)", { count: "exact" }).eq("portfolio_id", id!).limit(400);
       const { data: transactions } = await supabase.from("transactions" as any).select("*, asset:assets(symbol), user:profiles!inner(display_name)").eq("portfolio_id", id!).order("traded_at", { ascending: false }).limit(400);
       const { data: valuation } = await supabase.from("portfolio_valuations").select("total_value,as_of_date").eq("portfolio_id", id!).order("as_of_date", { ascending: false }).limit(1).maybeSingle();
@@ -39,7 +41,7 @@ export default function PortfolioDetail() {
       const { data: prices } = assetIds.length ? await supabase.from("prices").select("asset_id,price").in("asset_id", assetIds).order("as_of_date", { ascending: false }) : { data: [] as any[] };
       const latestPrice = new Map<string, number>();
       for (const p of prices || []) if (!latestPrice.has(p.asset_id)) latestPrice.set(p.asset_id, Number(p.price));
-      return { portfolio, holdings: (holdings || []).map((h: any) => ({ ...h, latest_price: h.asset?.id ? latestPrice.get(h.asset.id) ?? null : null })), transactions: transactions || [], valuation, overLimit: (count || 0) > 200, latestPrice };
+      return { portfolio, currentUserId: auth.user?.id ?? null, holdings: (holdings || []).map((h: any) => ({ ...h, latest_price: h.asset?.id ? latestPrice.get(h.asset.id) ?? null : null })), transactions: transactions || [], valuation, overLimit: (count || 0) > 200, latestPrice };
     },
     enabled: !!id,
   });
@@ -49,6 +51,8 @@ export default function PortfolioDetail() {
   if (isLoading) return <AppLayout><PageSkeleton rows={3} /></AppLayout>;
   if (error) return <AppLayout><ErrorState message={error.message} onAction={() => refetch()} /></AppLayout>;
   if (!data?.portfolio) return <AppLayout><EmptyState title="Portfolio missing" message="This portfolio could not be found." ctaLabel="Back" onCta={() => history.back()} /></AppLayout>;
+
+  const isOwner = data.currentUserId != null && data.currentUserId === data.portfolio.owner_user_id;
 
   return (
     <AppLayout>
@@ -61,7 +65,12 @@ export default function PortfolioDetail() {
               <Select value={data.portfolio.visibility} onValueChange={(visibility) => supabase.from("portfolios").update({ visibility }).eq("id", id!)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="private">Private</SelectItem><SelectItem value="authenticated">Logged-in</SelectItem><SelectItem value="group">Group</SelectItem><SelectItem value="public">Public</SelectItem></SelectContent></Select>
               <Input value={data.portfolio.broker_notes || ""} placeholder="Broker notes" onChange={(e) => supabase.from("portfolios").update({ broker_notes: e.target.value }).eq("id", id!)} />
             </div>
-            <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => exportToCSV(data.portfolio.name, data.holdings)}>Export CSV</Button><Button variant="outline" onClick={() => exportToJSON(data.portfolio, data.holdings)}>Export JSON</Button><Button onClick={() => setShowImport(true)}>Import holdings</Button><Button variant="secondary" onClick={() => setShowTxImport(true)}>Import transactions</Button><Button onClick={() => setTradeType("buy")}>Buy</Button><Button variant="outline" onClick={() => setTradeType("sell")}>Sell</Button><Button variant="outline" onClick={() => setTradeType("adjust")}>Adjust</Button><Button variant="destructive" onClick={() => setTradeType("remove")}>Remove</Button></div>
+            <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => exportToCSV(data.portfolio.name, data.holdings)}>Export CSV</Button><Button variant="outline" onClick={() => exportToJSON(data.portfolio, data.holdings)}>Export JSON</Button><Button onClick={() => setShowImport(true)}>Import holdings</Button><Button variant="secondary" onClick={() => setShowTxImport(true)}>Import transactions</Button>{isOwner && <Button variant="outline" disabled={refreshingClassifications} onClick={async () => {
+              setRefreshingClassifications(true);
+              await supabase.rpc("refresh_asset_research" as never, { _portfolio_id: id } as never);
+              await refetch();
+              setRefreshingClassifications(false);
+            }}>{refreshingClassifications ? "Updating..." : "Update classifications"}</Button>}<Button onClick={() => setTradeType("buy")}>Buy</Button><Button variant="outline" onClick={() => setTradeType("sell")}>Sell</Button><Button variant="outline" onClick={() => setTradeType("adjust")}>Adjust</Button><Button variant="destructive" onClick={() => setTradeType("remove")}>Remove</Button></div>
           </CardContent>
         </Card>
 
@@ -81,7 +90,7 @@ export default function PortfolioDetail() {
           </TabsContent>
           <TabsContent value="intelligence">
             <Card><CardContent className="pt-4">
-              <PortfolioIntelligenceTable portfolioId={id!} holdings={data.holdings} prices={data.latestPrice} baseCurrency={data.portfolio.base_currency} />
+              <PortfolioIntelligenceTable portfolioId={id!} holdings={data.holdings} prices={data.latestPrice} baseCurrency={data.portfolio.base_currency} canOverrideBucket={isOwner} />
             </CardContent></Card>
           </TabsContent>
         </Tabs>
