@@ -10,6 +10,7 @@ import { Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { groupNordeaHoldingsByAccount, parseCSV, parseExcelImport, parseJSONImport, validateImportRows, type NordeaAccountGroup } from "@/lib/portfolio-utils";
 import { applyTickerResolutionsToRows, extractTickerAndExchange, normalizeTicker } from "@/lib/ticker-resolution";
+import { applyImportResolution, type SymbolResolutionStatus, type SymbolCandidate } from "@/lib/symbol-resolution";
 import { logAuditAction } from "@/lib/audit";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -41,6 +42,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const [accountSelections, setAccountSelections] = useState<Record<string, AccountSelection>>({});
   const [tickerResolutions, setTickerResolutions] = useState<Record<string, string>>({});
   const [tickerSuggestions, setTickerSuggestions] = useState<Record<string, string[]>>({});
+  const [previewResolution, setPreviewResolution] = useState<Record<string, { status: SymbolResolutionStatus; reason?: string }>>({});
+  const [importManualInvalid, setImportManualInvalid] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const totalSteps = detectedNordea ? 6 : 4;
@@ -166,8 +169,44 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     }
   };
 
+  useEffect(() => {
+    const uniqueSymbols = [...new Set(validRows.map((row) => String(row.symbol || "").toUpperCase().trim()).filter(Boolean))];
+    if (uniqueSymbols.length === 0) {
+      setPreviewResolution({});
+      return;
+    }
+
+    let active = true;
+    const queue = [...uniqueSymbols];
+    const nextState: Record<string, { status: SymbolResolutionStatus; reason?: string }> = {};
+    const workers = Array.from({ length: Math.min(4, queue.length) }).map(async () => {
+      while (queue.length) {
+        const symbol = queue.shift();
+        if (!symbol) break;
+        const { data } = await supabase.functions.invoke("resolve-symbol", { body: { symbol } });
+        const resolution = applyImportResolution(symbol, ((data?.candidates || []) as SymbolCandidate[]));
+        nextState[symbol] = { status: resolution.status, reason: resolution.reason };
+      }
+    });
+
+    Promise.all(workers).then(() => {
+      if (active) setPreviewResolution(nextState);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [validRows]);
+
   const runImport = async () => {
     setBusy(true);
+
+    const hasInvalidPreview = validRows.some((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "invalid");
+    if (hasInvalidPreview && !importManualInvalid) {
+      setBusy(false);
+      toast.error("Some symbols are invalid/unresolvable. Resolve them or choose import anyway as manual/unpriced.");
+      return;
+    }
 
     if (!detectedNordea) {
       await upsertHoldingRows(portfolioId, validRows, new Set<string>());
@@ -264,7 +303,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
             </div>
             <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
           </div>
-          <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>)}</TableBody></Table>
+          <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead><TableHead>Resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={importManualInvalid} onChange={(e) => setImportManualInvalid(e.target.checked)} />Import anyway as manual/unpriced for invalid symbols</label>
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(4)} disabled={validRows.length === 0}>Continue</Button></div>
         </div>}
 

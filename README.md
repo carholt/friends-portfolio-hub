@@ -184,6 +184,24 @@ Manual dashboard steps remaining:
 
 The resolver preserves `metadata_json.isin`, writes `metadata_json.provider_symbol`, and safely merges overlapping holdings by portfolio.
 
+## 10b) Canonical symbol resolution + unpriced behavior
+
+- `assets.price_symbol` is now the canonical TwelveData lookup symbol (for example `SSV:TSXV`).
+- `assets.exchange_code` stores the listing exchange (`TSX`, `TSXV`, `NYSE`, `NASDAQ`, etc.).
+- `assets.symbol_resolution_status` tracks: `unknown`, `resolved`, `ambiguous`, or `invalid`.
+- Import preview resolves each unique symbol and marks rows as resolved/ambiguous/invalid before import.
+- UI shows **Fix symbol** for unpriced or invalid holdings so users can choose the correct listing.
+- **Unpriced** means the app could not fetch a positive quote (typically unresolved/invalid symbol, ambiguous listing, or no provider quote).
+
+### Troubleshooting: prices are empty
+
+If prices are missing after running the updater:
+
+1. Check holdings marked **Unpriced** and use **Fix symbol**.
+2. Confirm assets have `price_symbol` + `symbol_resolution_status='resolved'`.
+3. Re-run `update-prices` after symbol resolution.
+4. Ensure `TWELVE_DATA_API_KEY` is configured in Supabase function secrets.
+
 ## 11) Pricing diagnostics (admin-only dry run)
 
 Deploy function:
