@@ -252,3 +252,34 @@ Report statuses:
 - `rate_limited`: free-tier credit/rate window exceeded (tool retries before final status).
 
 Security note: the script reads only `TWELVEDATA_API_KEY` from environment variables and does not print the key.
+
+## 13) Company AI reports pipeline
+
+### Deploy the new Edge Function
+
+```bash
+supabase functions deploy company-ai-report
+```
+
+### Required Supabase secrets
+
+```bash
+supabase secrets set OPENAI_API_KEY=<openai-api-key>
+supabase secrets set OPENAI_MODEL=gpt-4.1-mini
+supabase secrets set SUPABASE_URL=https://<project-ref>.supabase.co
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+```
+
+### Operational notes
+
+- Reports are created via `public.request_company_ai_report(...)` and processed by `company-ai-report` function.
+- Daily rate limit is capped at **5 reports per user per rolling day**.
+- Cache guard blocks regeneration if an asset already has a completed report in the last 24h unless `force=true` is passed in assumptions.
+- OpenAI web search is used in **Standard** mode; **Quick** mode skips web search and uses stored context.
+
+### Troubleshooting
+
+- **Stuck queued**: check network tab for `functions.invoke('company-ai-report')` failure and verify JWT/auth session.
+- **Stuck running**: inspect function logs for OpenAI timeout or schema parsing errors; failed runs are marked `failed` with `error`.
+- **No sources returned**: retry in Standard mode (web search enabled), or ensure company + metrics data exists.
+- **Rate limit errors**: wait for the rolling window or use a different authenticated user.
