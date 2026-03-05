@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import CreatePortfolioDialog from "@/components/CreatePortfolioDialog";
 import ImportDialog from "@/components/ImportDialog";
 import { Plus, Upload } from "lucide-react";
+import TransactionImportDialog from "@/components/TransactionImportDialog";
 import { useQuery } from "@tanstack/react-query";
 import { PageSkeleton } from "@/components/feedback/PageSkeleton";
 import { ErrorState } from "@/components/feedback/ErrorState";
@@ -19,6 +20,7 @@ const PAGE_SIZE = 25;
 export default function PortfoliosPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [showImportFor, setShowImportFor] = useState<string | null>(null);
+  const [showTxImportFor, setShowTxImportFor] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
@@ -33,7 +35,7 @@ export default function PortfoliosPage() {
     },
   });
 
-  useEffect(() => { if (searchParams.get("import") === "1" && data?.[0]) setShowImportFor(data[0].id); }, [searchParams, data]);
+  useEffect(() => { if (searchParams.get("import") === "1" && data?.[0]) setShowImportFor(data[0].id); if (searchParams.get("tximport") === "1" && data?.[0]) setShowTxImportFor(data[0].id); }, [searchParams, data]);
 
   const canLoadMore = useMemo(() => (data?.length || 0) >= visibleCount, [data, visibleCount]);
 
@@ -42,7 +44,8 @@ export default function PortfoliosPage() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold">Portfolios</h1>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setShowImportFor(data?.[0]?.id || null)} className="gap-2" disabled={!data?.[0]}><Upload className="h-4 w-4" /> Import</Button>
+          <Button variant="outline" onClick={() => setShowImportFor(data?.[0]?.id || null)} className="gap-2" disabled={!data?.[0]}><Upload className="h-4 w-4" /> Import holdings</Button>
+          <Button variant="secondary" onClick={() => setShowTxImportFor(data?.[0]?.id || null)} className="gap-2" disabled={!data?.[0]}><Upload className="h-4 w-4" /> Import transactions</Button>
           <Button onClick={() => setShowCreate(true)} className="gap-2"><Plus className="h-4 w-4" /> Create</Button>
         </div>
       </div>
@@ -61,6 +64,7 @@ export default function PortfoliosPage() {
       )}
       <CreatePortfolioDialog open={showCreate} onOpenChange={setShowCreate} onCreated={refetch} />
       {showImportFor && <ImportDialog open={!!showImportFor} onOpenChange={() => setShowImportFor(null)} portfolioId={showImportFor} onImported={refetch} />}
+      {showTxImportFor && <TransactionImportDialog open={!!showTxImportFor} onOpenChange={() => setShowTxImportFor(null)} portfolioId={showTxImportFor} onImported={refetch} />}
     </AppLayout>
   );
 }

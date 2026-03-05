@@ -68,14 +68,14 @@ Deno.serve(async (req) => {
 
   try {
     const today = new Date().toISOString().split("T")[0];
-    const counts = { holdings_assets: 0, resolved_now: 0, priced: 0, skipped_unresolved: 0, skipped_no_price: 0, errors: 0 };
+    const counts = { assets_considered: 0, resolved_now: 0, priced: 0, skipped_unresolved: 0, skipped_no_quote: 0, errors: 0 };
     const skippedSymbols: Array<{ symbol: string; reason: string }> = [];
 
     const { data: activeHoldings, error: holdingsError } = await supabase.from("holdings").select("asset_id").limit(100000);
     if (holdingsError) throw holdingsError;
 
     const uniqueAssetIds = [...new Set((activeHoldings || []).map((h) => h.asset_id))];
-    counts.holdings_assets = uniqueAssetIds.length;
+    counts.assets_considered = uniqueAssetIds.length;
 
     if (uniqueAssetIds.length === 0) {
       return new Response(JSON.stringify({ message: "No holdings/assets to update", counts, skipped_symbols: [] }), {
@@ -139,7 +139,7 @@ Deno.serve(async (req) => {
           rows.push({ asset_id: asset.id, price: parsedPrice, currency: quoteCurrency, as_of_date: today, source: "twelve_data" });
           counts.priced += 1;
         } else {
-          counts.skipped_no_price += 1;
+          counts.skipped_no_quote += 1;
           if (skippedSymbols.length < 20) skippedSymbols.push({ symbol: asset.symbol, reason: "no positive price" });
         }
       }
@@ -151,7 +151,8 @@ Deno.serve(async (req) => {
       if (i + CHUNK_SIZE < assetsToFetch.length) await sleep(1400);
     }
 
-    return new Response(JSON.stringify({ message: "Prices update finished", counts, skipped_symbols: skippedSymbols }), {
+    return new Response(JSON.stringify({ message: "Prices update finished", summary: counts, skipped_symbols: skippedSymbols }), {
+      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {

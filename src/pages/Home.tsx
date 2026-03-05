@@ -91,6 +91,7 @@ export default function HomePage() {
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button onClick={() => setShowCreate(true)}>Create portfolio</Button>
               <Button variant="outline" onClick={() => navigate("/portfolios?import=1")} className="gap-2"><Import className="h-4 w-4" /> Import portfolio</Button>
+              <Button variant="secondary" onClick={() => navigate("/portfolios?tximport=1")} className="gap-2"><Import className="h-4 w-4" /> Import transactions</Button>
               <Button variant="outline" onClick={() => navigate("/portfolios")}>Add holding</Button>
             </div>
           </CardContent>
