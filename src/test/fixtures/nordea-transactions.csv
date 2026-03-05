@@ -1,0 +1,5 @@
+﻿Affärsnr;Transaktionstyp;Namn;ISIN;Ticker;Marknad;Avslutsdatum;Likviddag;Antal/Nominellt;Kurs;Valuta;Valutakurs;Courtage;Belopp i utländsk valuta;Belopp i SEK
+1001;Köp;Argex Mining;CA000000AGX1;AGX;Toronto Stock Exchange;Wed Mar 04 00:00:00 CET 2026;Fri Mar 06 00:00:00 CET 2026;100,0;1,25;CAD;7,81;29,00;-125,00;-976,25
+1002;Köp;Aya Gold;CA000000AYA2;AYA;Toronto Stock Exchange;Thu Mar 05 00:00:00 CET 2026;Mon Mar 09 00:00:00 CET 2026;50,0;10,50;CAD;7,80;19,00;-525,00;-4114,00
+1003;Köp;Aumb Corp;CA000000AUM3;AUMB;Toronto Venture Exchange;Fri Mar 06 00:00:00 CET 2026;Tue Mar 10 00:00:00 CET 2026;80,0;0,80;CAD;7,82;25,00;-64,00;-526,48
+1004;Sälj;Aya Gold;CA000000AYA2;AYA;Toronto Stock Exchange;Mon Mar 16 00:00:00 CET 2026;Wed Mar 18 00:00:00 CET 2026;20,0;12,00;CAD;7,85;15,00;240,00;1869,00

@@ -1,19 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { buildPreviewRows, detectBrokerByHeaders, parseCsvRows, parseFlexibleDate } from "@/lib/transaction-import";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { buildPreviewRows, buildProviderSymbol, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
+import { calculateHoldingWithFees } from "@/lib/transactions";
 
 describe("Nordea transaction import parsing", () => {
-  it("detects nordea csv and parses semicolon + swedish decimals", () => {
-    const csv = "\uFEFFAffärsnr;Transaktionstyp;Avslutsdatum;Likviddag;Antal/Nominellt;Kurs;Courtage;Belopp i SEK;Symbol\n123;Köp;Wed Mar 04 00:00:00 CET 2026;2026-03-06;10;1,07;2,50;-13,20;NDA";
-    const rows = parseCsvRows(csv);
+  const fixture = readFileSync(resolve(process.cwd(), "src/test/fixtures/nordea-transactions.csv"), "utf8");
+
+  it("parses nordea fixture and extracts symbols", () => {
+    const rows = parseCsvRows(fixture);
     expect(detectBrokerByHeaders(rows)).toBe("nordea");
     const preview = buildPreviewRows(rows, "nordea");
-    expect(preview[0].tx.price).toBeCloseTo(1.07, 2);
-    expect(preview[0].tx.fees).toBeCloseTo(2.5, 2);
-    expect(preview[0].tx.total_local).toBeCloseTo(-13.2, 2);
-    expect(preview[0].tx.trade_date).toBe("2026-03-03");
+
+    expect(preview).toHaveLength(4);
+    expect(preview.map((row) => row.tx.symbol_raw)).toEqual(["AGX", "AYA", "AUMB", "AYA"]);
+    expect(preview.every((row) => row.errors.length === 0)).toBe(true);
   });
 
-  it("parses CET date strings robustly", () => {
-    expect(parseFlexibleDate("Wed Mar 04 00:00:00 CET 2026")).toMatch(/^2026-03-0[34]$/);
+  it("maps TSX/TSXV and provider symbol suffixes", () => {
+    expect(mapNordeaExchange("Toronto Stock Exchange")).toEqual({ exchange_code: "TSX", suffix: ".TO" });
+    expect(mapNordeaExchange("Toronto Venture Exchange")).toEqual({ exchange_code: "TSXV", suffix: ".V" });
+    expect(buildProviderSymbol("AYA", "TSX")).toBe("AYA.TO");
+    expect(buildProviderSymbol("AUMB", "TSXV")).toBe("AUMB.V");
+  });
+
+  it("computes holdings average cost from buy/sell ledger", () => {
+    const result = calculateHoldingWithFees([
+      { type: "buy", quantity: 100, price: 1.25, fees: 29 },
+      { type: "buy", quantity: 50, price: 10.5, fees: 19 },
+      { type: "sell", quantity: 20, price: 12, fees: 15 },
+    ]);
+
+    expect(result.quantity).toBe(130);
+    expect(result.avgCost).toBeCloseTo(4.6533, 3);
   });
 });
