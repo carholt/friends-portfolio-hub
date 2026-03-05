@@ -74,8 +74,18 @@ Deno.serve(async (req) => {
     for (let i = 0; i < assetsToFetch.length; i += CHUNK_SIZE) {
       const chunk = assetsToFetch.slice(i, i + CHUNK_SIZE);
       const symbols = chunk.map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolveProviderSymbol(asset))).join(",");
-      const response = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols)}&apikey=${TWELVE_DATA_API_KEY}`);
-      const payload = await response.json();
+      let payload: Record<string, any> = {};
+      try {
+        const response = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols)}&apikey=${TWELVE_DATA_API_KEY}`);
+        payload = await response.json();
+      } catch (requestError) {
+        for (const asset of chunk) {
+          const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolveProviderSymbol(asset);
+          counts.errors += 1;
+          if (skippedSymbols.length < 50) skippedSymbols.push({ symbol: key, reason: `request_failed:${requestError instanceof Error ? requestError.message : "unknown"}` });
+        }
+        continue;
+      }
 
       const rows: Array<{ asset_id: string; price: number; currency: string; as_of_date: string; source: string }> = [];
       for (const asset of chunk) {

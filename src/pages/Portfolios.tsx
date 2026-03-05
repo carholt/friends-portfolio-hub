@@ -45,7 +45,7 @@ export default function PortfoliosPage() {
         <h1 className="text-2xl font-bold">Portfolios</h1>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setShowImportFor(data?.[0]?.id || null)} className="gap-2" disabled={!data?.[0]}><Upload className="h-4 w-4" /> Import holdings</Button>
-          <Button variant="secondary" onClick={() => setShowTxImportFor(data?.[0]?.id || null)} className="gap-2" disabled={!data?.[0]}><Upload className="h-4 w-4" /> Import transactions (Nordea)</Button>
+          <Button variant="secondary" onClick={() => setShowTxImportFor(data?.[0]?.id || null)} className="gap-2" disabled={!data?.[0]}><Upload className="h-4 w-4" /> Import transactions</Button>
           <Button onClick={() => setShowCreate(true)} className="gap-2"><Plus className="h-4 w-4" /> Create</Button>
         </div>
       </div>
