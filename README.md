@@ -40,6 +40,30 @@ Required frontend variables:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 
+Optional monetization/friends-mode variables:
+
+- `VITE_PAYWALL_ENABLED` (`false` by default). Controls whether the UI shows the report paywall.
+- `PAYWALL_ENABLED` (`false` by default). Controls Stripe checkout behavior in Edge Functions.
+
+### Friends mode / live paywall switch
+
+Default behavior is **friends mode** (`PAYWALL_ENABLED=false` + `VITE_PAYWALL_ENABLED=false`):
+
+- report access RPC short-circuits to allow access,
+- new users default to `subscription_tier='max'`,
+- Stripe purchase flow is bypassed and does not require Stripe secrets.
+
+To flip monetization live:
+
+1. Set `PAYWALL_ENABLED=true` in Supabase Edge Function secrets.
+2. Set `VITE_PAYWALL_ENABLED=true` in Cloudflare Pages env vars and redeploy frontend.
+3. Set Postgres setting `app.settings.paywall_enabled = 'true'` (for RPC + signup defaults), for example:
+
+```sql
+alter database postgres set app.settings.paywall_enabled = 'true';
+```
+
+
 ## 3) Cloudflare Pages deployment
 
 Create a Pages project connected to this repository and configure:

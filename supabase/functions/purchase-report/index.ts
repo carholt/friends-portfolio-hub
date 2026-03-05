@@ -14,10 +14,17 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const paywallEnabled = (Deno.env.get("PAYWALL_ENABLED") || "false").toLowerCase() === "true";
   const stripeSecret = Deno.env.get("STRIPE_SECRET_KEY");
   const unlockPrice = Number(Deno.env.get("REPORT_UNLOCK_PRICE") || "0");
   const generationPrice = Number(Deno.env.get("REPORT_GENERATION_PRICE") || "0");
   const currency = (Deno.env.get("REPORT_CURRENCY") || "usd").toLowerCase();
+
+  if (!paywallEnabled) {
+    return new Response(JSON.stringify({ already_unlocked: true, paywall_enabled: false }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 
   if (!stripeSecret) {
     return new Response(JSON.stringify({ error: "STRIPE_SECRET_KEY is not configured" }), {

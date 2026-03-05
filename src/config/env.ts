@@ -15,6 +15,7 @@ function getEnvVar(name: EnvVarName): string {
 export const env = {
   supabaseUrl: getEnvVar("VITE_SUPABASE_URL"),
   supabaseAnonKey: getEnvVar("VITE_SUPABASE_PUBLISHABLE_KEY"),
+  paywallEnabled: String(import.meta.env.VITE_PAYWALL_ENABLED || "false").toLowerCase() === "true",
 };
 
 export const envError = missingEnvVars.length > 0
