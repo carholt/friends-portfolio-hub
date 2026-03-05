@@ -125,6 +125,13 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
       return;
     }
 
+    const { error: refreshError } = await supabase.rpc("refresh_asset_research" as never, { _portfolio_id: portfolioId } as never);
+    if (refreshError) {
+      toast.error(refreshError.message);
+      setBusy(false);
+      return;
+    }
+
     toast.success(`Imported ${clean.length} transactions`);
     onImported();
     onOpenChange(false);
