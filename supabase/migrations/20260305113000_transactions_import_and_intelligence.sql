@@ -22,14 +22,25 @@ UPDATE public.transactions SET owner_user_id = user_id WHERE owner_user_id IS NU
 ALTER TABLE public.transactions ALTER COLUMN owner_user_id SET NOT NULL;
 ALTER TABLE public.transactions ALTER COLUMN asset_id DROP NOT NULL;
 ALTER TABLE public.transactions ALTER COLUMN quantity DROP NOT NULL;
-ALTER TABLE public.transactions ALTER COLUMN type TYPE TEXT USING type::text;
-DROP TYPE IF EXISTS public.transaction_type;
+
+-- Drop enum-based defaults/constraints before converting type -> text
+ALTER TABLE public.transactions ALTER COLUMN type DROP DEFAULT;
+ALTER TABLE public.transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+
+-- Convert enum to text
+ALTER TABLE public.transactions
+  ALTER COLUMN type TYPE TEXT
+  USING type::text;
+
 ALTER TABLE public.transactions ALTER COLUMN type SET NOT NULL;
 
+-- Recreate text-based check
 ALTER TABLE public.transactions
-  DROP CONSTRAINT IF EXISTS transactions_type_check;
-ALTER TABLE public.transactions
-  ADD CONSTRAINT transactions_type_check CHECK (type IN ('buy', 'sell', 'dividend', 'fee', 'deposit', 'withdrawal', 'split', 'transfer', 'adjust', 'remove'));
+  ADD CONSTRAINT transactions_type_check
+  CHECK (type IN ('buy', 'sell', 'dividend', 'fee', 'deposit', 'withdrawal', 'split', 'transfer', 'adjust', 'remove'));
+
+-- Only drop enum after column no longer depends on it
+DROP TYPE IF EXISTS public.transaction_type;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_portfolio_broker_external_id
   ON public.transactions(portfolio_id, broker, external_id)
