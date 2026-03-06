@@ -23,23 +23,22 @@ ALTER TABLE public.transactions ALTER COLUMN owner_user_id SET NOT NULL;
 ALTER TABLE public.transactions ALTER COLUMN asset_id DROP NOT NULL;
 ALTER TABLE public.transactions ALTER COLUMN quantity DROP NOT NULL;
 
--- Drop enum-based defaults/constraints before converting type -> text
+-- SAFE enum -> text migration using a new column
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS type_text TEXT;
+UPDATE public.transactions SET type_text = type::text WHERE type_text IS NULL;
+
 ALTER TABLE public.transactions ALTER COLUMN type DROP DEFAULT;
 ALTER TABLE public.transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
 
--- Convert enum to text
-ALTER TABLE public.transactions
-  ALTER COLUMN type TYPE TEXT
-  USING type::text;
-
+-- Remove old enum column and replace with text column
+ALTER TABLE public.transactions DROP COLUMN type;
+ALTER TABLE public.transactions RENAME COLUMN type_text TO type;
 ALTER TABLE public.transactions ALTER COLUMN type SET NOT NULL;
 
--- Recreate text-based check
 ALTER TABLE public.transactions
   ADD CONSTRAINT transactions_type_check
   CHECK (type IN ('buy', 'sell', 'dividend', 'fee', 'deposit', 'withdrawal', 'split', 'transfer', 'adjust', 'remove'));
 
--- Only drop enum after column no longer depends on it
 DROP TYPE IF EXISTS public.transaction_type;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_portfolio_broker_external_id
@@ -56,11 +55,13 @@ DROP POLICY IF EXISTS "Owner can insert transactions" ON public.transactions;
 CREATE POLICY "Owner can insert transactions" ON public.transactions
   FOR INSERT TO authenticated
   WITH CHECK (public.owns_portfolio(portfolio_id) AND auth.uid() = owner_user_id);
+
 DROP POLICY IF EXISTS "Owner can update transactions" ON public.transactions;
 CREATE POLICY "Owner can update transactions" ON public.transactions
   FOR UPDATE TO authenticated
   USING (public.owns_portfolio(portfolio_id) AND auth.uid() = owner_user_id)
   WITH CHECK (public.owns_portfolio(portfolio_id) AND auth.uid() = owner_user_id);
+
 DROP POLICY IF EXISTS "Owner can delete transactions" ON public.transactions;
 CREATE POLICY "Owner can delete transactions" ON public.transactions
   FOR DELETE TO authenticated
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS public.asset_research (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(portfolio_id, asset_id)
 );
+
 ALTER TABLE public.asset_research ENABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_asset_research_portfolio ON public.asset_research(portfolio_id);
 CREATE INDEX IF NOT EXISTS idx_asset_research_asset ON public.asset_research(asset_id);
@@ -113,6 +115,7 @@ CREATE TRIGGER asset_research_set_updated_at
 DROP POLICY IF EXISTS "Asset research visible via portfolio visibility" ON public.asset_research;
 CREATE POLICY "Asset research visible via portfolio visibility" ON public.asset_research
   FOR SELECT USING (public.can_view_portfolio(portfolio_id));
+
 DROP POLICY IF EXISTS "Asset research owner manage" ON public.asset_research;
 CREATE POLICY "Asset research owner manage" ON public.asset_research
   FOR ALL TO authenticated
@@ -135,7 +138,11 @@ DECLARE
   tx_price NUMERIC;
   tx_fees NUMERIC;
 BEGIN
-  FOR r IN SELECT DISTINCT asset_id FROM public.transactions WHERE portfolio_id = _portfolio_id AND asset_id IS NOT NULL LOOP
+  FOR r IN
+    SELECT DISTINCT asset_id
+    FROM public.transactions
+    WHERE portfolio_id = _portfolio_id AND asset_id IS NOT NULL
+  LOOP
     running_qty := 0;
     running_avg := 0;
     cost_basis := 0;
