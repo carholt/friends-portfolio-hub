@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { buildPreviewRows, buildProviderSymbol, computeStableHashFromNormalizedFields, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
+import { buildPreviewRows, buildPriceSymbol, computeStableHashFromNormalizedFields, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
 import { calculateHoldingWithFees } from "@/lib/transactions";
 import { detectMapping, type ImportMapping } from "@/lib/import-engine";
 
@@ -16,14 +16,15 @@ describe("Nordea transaction import parsing", () => {
 
     expect(preview).toHaveLength(2);
     expect(preview.map((row) => row.tx.symbol_raw)).toEqual(["AYA", "AYA"]);
+    expect(preview.every((row) => row.tx.price_symbol === "AYA.TO")).toBe(true);
     expect(preview.every((row) => row.errors.length === 0)).toBe(true);
   });
 
-  it("maps TSX/TSXV and provider symbol suffixes", () => {
+  it("maps TSX/TSXV and price symbol suffixes", () => {
     expect(mapNordeaExchange("Toronto Stock Exchange")).toEqual({ exchange_code: "TSX", suffix: ".TO" });
     expect(mapNordeaExchange("Toronto Venture Exchange")).toEqual({ exchange_code: "TSXV", suffix: ".V" });
-    expect(buildProviderSymbol("AYA", "TSX")).toBe("AYA.TO");
-    expect(buildProviderSymbol("AUMB", "TSXV")).toBe("AUMB.V");
+    expect(buildPriceSymbol("AYA", "TSX")).toBe("AYA.TO");
+    expect(buildPriceSymbol("AUMB", "TSXV")).toBe("AUMB.V");
   });
 
   it("computes holdings average cost from buy/sell ledger", () => {
@@ -120,6 +121,50 @@ describe("Nordea transaction import parsing", () => {
     expect(first).toEqual({ inserts: 1, updates: 0 });
     expect(second).toEqual({ inserts: 0, updates: 1 });
     expect(db.size).toBe(1);
+  });
+
+
+  it("uses duplicate key precedence: trade_id first, stable_hash fallback", () => {
+    const mapping = {
+      kind: "transactions",
+      broker_key: "nordea",
+      delimiter: ",",
+      decimal: ".",
+      date_parser: "iso",
+      columns: {
+        trade_id: "trade_id",
+        trade_type: "type",
+        symbol: "symbol",
+        exchange: "exchange",
+        date: "date",
+        quantity: "quantity",
+        price: "price",
+        currency: "currency",
+      },
+      transforms: { symbol_cleaning_rules: [], numeric_parse_rules: [], exchange_map_rules: {} },
+      confidence: 1,
+      questions: [],
+    } satisfies ImportMapping;
+
+    const rowsWithTradeId = [
+      { trade_id: "T-1", type: "buy", symbol: "AYA", exchange: "TSX", date: "2025-01-10", quantity: "100", price: "2.50", currency: "SEK" },
+      { trade_id: "T-1", type: "sell", symbol: "AYA", exchange: "TSX", date: "2025-01-11", quantity: "1", price: "2.60", currency: "SEK" },
+    ];
+
+    const previewByTradeId = buildPreviewRows(rowsWithTradeId, mapping);
+    expect(previewByTradeId[0].duplicateKey).toContain(":trade:T-1");
+    expect(previewByTradeId[1].duplicateKey).toContain(":trade:T-1");
+    expect(previewByTradeId[1].errors).toContain("Duplicate transaction in file");
+
+    const rowsWithoutTradeId = [
+      { type: "buy", symbol: "AYA", exchange: "TSX", date: "2025-01-10", quantity: "100", price: "2.50", currency: "SEK" },
+      { currency: "SEK", price: "2.50", quantity: "100", date: "2025-01-10", exchange: "TSX", symbol: "AYA", type: "buy" },
+    ];
+
+    const previewByStableHash = buildPreviewRows(rowsWithoutTradeId, mapping);
+    expect(previewByStableHash[0].duplicateKey).toContain(":stable:");
+    expect(previewByStableHash[1].duplicateKey).toBe(previewByStableHash[0].duplicateKey);
+    expect(previewByStableHash[1].errors).toContain("Duplicate transaction in file");
   });
 
 });

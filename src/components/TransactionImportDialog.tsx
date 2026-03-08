@@ -139,7 +139,7 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
       fees: tx.fees,
       raw_row: tx.raw_row,
       asset_id: symbolMap.get(`${tx.symbol_raw}|${tx.exchange_code || ""}`) || null,
-      metadata_json: { provider_symbol: tx.provider_symbol, exchange_code: tx.exchange_code },
+      metadata_json: { price_symbol: tx.price_symbol, exchange_code: tx.exchange_code },
     }));
 
     const withTradeId = payload.filter((row) => row.trade_id);
