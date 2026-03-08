@@ -11,7 +11,9 @@ export interface AppBootstrapData {
   profileLoaded: boolean;
   profileMissing: boolean;
   profileError: string | null;
+  profile: { onboarding_completed: boolean | null } | null;
   onboardingCompleted: boolean;
+  portfolios: Array<{ id: string }>;
   portfolioCount: number;
   portfolioError: string | null;
   paywallEnabled: boolean;
@@ -34,7 +36,9 @@ export function useAppBootstrap() {
         profileLoaded: false,
         profileMissing: false,
         profileError: null,
-        onboardingCompleted: false,
+        profile: null,
+        onboardingCompleted: true,
+        portfolios: [],
         portfolioCount: 0,
         portfolioError: null,
         paywallEnabled: env.paywallEnabled,
@@ -57,24 +61,26 @@ export function useAppBootstrap() {
 
       if (profileResponse.error) {
         base.profileError = profileResponse.error.message;
-        base.profileLoaded = false;
       } else if (!profileResponse.data) {
         base.profileMissing = true;
-        base.profileLoaded = false;
       } else {
         base.profileLoaded = true;
-        base.onboardingCompleted = !!profileResponse.data.onboarding_completed;
+        base.profile = {
+          onboarding_completed: profileResponse.data.onboarding_completed,
+        };
+        base.onboardingCompleted = profileResponse.data.onboarding_completed === true;
         base.subscriptionTier = String(profileResponse.data.subscription_tier || "free").toLowerCase();
       }
 
       const portfoliosResponse = await supabase
         .from("portfolios")
-        .select("id", { count: "exact", head: true });
+        .select("id");
 
       if (portfoliosResponse.error) {
         base.portfolioError = portfoliosResponse.error.message;
       } else {
-        base.portfolioCount = portfoliosResponse.count ?? 0;
+        base.portfolios = portfoliosResponse.data || [];
+        base.portfolioCount = base.portfolios.length;
       }
 
       return base;
