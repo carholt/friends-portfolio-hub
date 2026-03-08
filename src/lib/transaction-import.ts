@@ -97,7 +97,7 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
     const symbol = normalize(row[mapping.columns.symbol || ""]).toUpperCase() || null;
     const exchangeRaw = normalize(row[mapping.columns.exchange || ""]) || null;
     const exchangeMapping = mapExchangeToPriceSymbol(symbol, exchangeRaw);
-    const tx: NormalizedTransaction = {
+    const normalizedTx: NormalizedTransaction = {
       broker: mapping.broker_key,
       trade_id: tradeId,
       trade_type: mapType(normalize(row[mapping.columns.trade_type || ""])),
@@ -117,15 +117,15 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
 
     const errors: string[] = [];
     if (!mapping.columns.symbol) errors.push("Could not detect ticker column");
-    if (tx.symbol_raw && !tx.exchange_code && ["TSX", "TSXV"].some((k) => (tx.exchange_raw || "").toUpperCase().includes(k))) {
+    if (normalizedTx.symbol_raw && !normalizedTx.exchange_code && ["TSX", "TSXV"].some((k) => (normalizedTx.exchange_raw || "").toUpperCase().includes(k))) {
       errors.push("Ticker present but exchange missing (required for TSXV/TSX)");
     }
-    if (!Number.isFinite(tx.quantity) || tx.quantity === 0) errors.push("Could not parse quantity");
-    if (!tx.traded_at) errors.push("Unknown date format");
+    if (!Number.isFinite(normalizedTx.quantity) || normalizedTx.quantity === 0) errors.push("Could not parse quantity");
+    if (!normalizedTx.traded_at) errors.push("Unknown date format");
 
-    const duplicateKey = `${tx.broker}:${tx.trade_id}`;
+    const duplicateKey = `${normalizedTx.broker}:${normalizedTx.trade_id}`;
     if (seen.has(duplicateKey)) errors.push("Duplicate trade id in file");
     seen.add(duplicateKey);
-    return { tx, errors, duplicateKey };
+    return { tx: normalizedTx, errors, duplicateKey };
   });
 }
