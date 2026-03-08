@@ -7,6 +7,7 @@ export type BrokerKind = "nordea" | "avanza" | "unknown";
 export interface NormalizedTransaction {
   broker: string;
   trade_id: string | null;
+  stable_hash: string;
   trade_type: NormalizedTransactionType;
   symbol_raw: string | null;
   isin: string | null;
@@ -88,12 +89,37 @@ const stableHash = (row: RawRow) => {
   return `row-${hash.toString(16)}`;
 };
 
+const stableStringPart = (value: unknown, transform?: (next: string) => string) => {
+  const normalized = normalize(value);
+  return transform ? transform(normalized) : normalized;
+};
+
+export function computeStableHashFromNormalizedFields(tx: Pick<NormalizedTransaction, "broker" | "trade_type" | "symbol_raw" | "isin" | "exchange_code" | "traded_at" | "quantity" | "price" | "currency" | "fees">) {
+  const parts = [
+    stableStringPart(tx.broker, (next) => next.toLowerCase()),
+    stableStringPart(tx.trade_type, (next) => next.toLowerCase()),
+    stableStringPart(tx.symbol_raw, (next) => next.toUpperCase()),
+    stableStringPart(tx.isin, (next) => next.toUpperCase()),
+    stableStringPart(tx.exchange_code, (next) => next.toUpperCase()),
+    stableStringPart(tx.traded_at),
+    Number.isFinite(tx.quantity) ? tx.quantity.toFixed(8) : "",
+    typeof tx.price === "number" && Number.isFinite(tx.price) ? tx.price.toFixed(8) : "",
+    stableStringPart(tx.currency, (next) => next.toUpperCase()),
+    typeof tx.fees === "number" && Number.isFinite(tx.fees) ? tx.fees.toFixed(8) : "",
+  ];
+
+  const str = parts.join("|");
+  let hash = 0;
+  for (let i = 0; i < str.length; i += 1) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  return `tx-${hash.toString(16)}`;
+}
+
 export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): ParsedImportPreviewRow[] {
   const seen = new Set<string>();
   const decimal = mapping.decimal;
 
   return rows.map((row) => {
-    const tradeId = normalize(row[mapping.columns.trade_id || ""]) || stableHash(row);
+    const tradeId = normalize(row[mapping.columns.trade_id || ""]) || null;
     const symbol = normalize(row[mapping.columns.symbol || ""]).toUpperCase() || null;
     const exchangeRaw = normalize(row[mapping.columns.exchange || ""]) || null;
     const exchangeMapping = mapExchangeToPriceSymbol(symbol, exchangeRaw);
@@ -110,8 +136,13 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
       quantity: parseNumberByLocale(normalize(row[mapping.columns.quantity || ""]), decimal) ?? 0,
       price: parseNumberByLocale(normalize(row[mapping.columns.price || ""]), decimal),
       currency: normalize(row[mapping.columns.currency || ""]).toUpperCase() || null,
-      fx_rate: null,
       fees: parseNumberByLocale(normalize(row[mapping.columns.fees || ""]), decimal),
+    };
+
+    const tx: NormalizedTransaction = {
+      ...txBase,
+      stable_hash: computeStableHashFromNormalizedFields(txBase),
+      fx_rate: null,
       raw_row: row,
     };
 
@@ -123,7 +154,7 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
     if (!Number.isFinite(tx.quantity) || tx.quantity === 0) errors.push("Could not parse quantity");
     if (!tx.traded_at) errors.push("Unknown date format");
 
-    const duplicateKey = `${tx.broker}:${tx.trade_id}`;
+    const duplicateKey = tx.trade_id ? `${tx.broker}:trade:${tx.trade_id}` : `${tx.broker}:stable:${tx.stable_hash || stableHash(row)}`;
     if (seen.has(duplicateKey)) errors.push("Duplicate trade id in file");
     seen.add(duplicateKey);
     return { tx, errors, duplicateKey };

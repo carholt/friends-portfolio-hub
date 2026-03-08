@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildPreviewRows, buildPriceSymbol, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
 import { calculateHoldingWithFees } from "@/lib/transactions";
-import { detectMapping } from "@/lib/import-engine";
+import { detectMapping, type ImportMapping } from "@/lib/import-engine";
 
 describe("Nordea transaction import parsing", () => {
   const fixture = readFileSync(resolve(process.cwd(), "src/test/fixtures/nordea-transactions.csv"), "utf8");
@@ -36,4 +36,90 @@ describe("Nordea transaction import parsing", () => {
     expect(result.quantity).toBe(130);
     expect(result.avgCost).toBeCloseTo(4.6533, 3);
   });
+
+  it("builds deterministic stable hash from normalized fields", () => {
+    const hashA = computeStableHashFromNormalizedFields({
+      broker: "NORDEA",
+      trade_type: "buy",
+      symbol_raw: "aya",
+      isin: "ca05466c1005",
+      exchange_code: "tsx",
+      traded_at: "2025-01-10",
+      quantity: 100,
+      price: 2.5,
+      currency: "sek",
+      fees: 19,
+    });
+
+    const hashB = computeStableHashFromNormalizedFields({
+      broker: "nordea",
+      trade_type: "BUY",
+      symbol_raw: "AYA",
+      isin: "CA05466C1005",
+      exchange_code: "TSX",
+      traded_at: "2025-01-10",
+      quantity: 100,
+      price: 2.5,
+      currency: "SEK",
+      fees: 19,
+    });
+
+    expect(hashA).toBe(hashB);
+  });
+
+  it("re-imports missing trade_id rows without duplication using stable hash", () => {
+    const mapping = {
+      kind: "transactions",
+      broker_key: "nordea",
+      delimiter: ",",
+      decimal: ".",
+      date_parser: "iso",
+      columns: {
+        trade_type: "type",
+        symbol: "symbol",
+        isin: "isin",
+        exchange: "exchange",
+        date: "date",
+        quantity: "quantity",
+        price: "price",
+        currency: "currency",
+        fees: "fees",
+      },
+      transforms: { symbol_cleaning_rules: [], numeric_parse_rules: [], exchange_map_rules: {} },
+      confidence: 1,
+      questions: [],
+    } satisfies ImportMapping;
+
+    const importRows = [
+      { type: "buy", symbol: "AYA", isin: "CA05466C1005", exchange: "TSX", date: "2025-01-10", quantity: "100", price: "2.50", currency: "SEK", fees: "19" },
+    ];
+
+    const previewA = buildPreviewRows(importRows, mapping);
+    const reorderedRows = [{ fees: "19", currency: "SEK", price: "2.50", quantity: "100", date: "2025-01-10", exchange: "TSX", isin: "CA05466C1005", symbol: "AYA", type: "buy" }];
+    const previewB = buildPreviewRows(reorderedRows, mapping);
+
+    expect(previewA[0].tx.trade_id).toBeNull();
+    expect(previewA[0].tx.stable_hash).toBe(previewB[0].tx.stable_hash);
+
+    const db = new Map<string, { quantity: number }>();
+    const upsertWithoutTradeId = (preview: ReturnType<typeof buildPreviewRows>) => {
+      let inserts = 0;
+      let updates = 0;
+      for (const row of preview) {
+        const key = `portfolio-1:${row.tx.broker}:${row.tx.stable_hash}`;
+        if (db.has(key)) updates += 1;
+        else inserts += 1;
+        db.set(key, { quantity: row.tx.quantity });
+      }
+      return { inserts, updates };
+    };
+
+    const first = upsertWithoutTradeId(previewA);
+    const second = upsertWithoutTradeId(previewB);
+
+    expect(first).toEqual({ inserts: 1, updates: 0 });
+    expect(second).toEqual({ inserts: 0, updates: 1 });
+    expect(db.size).toBe(1);
+  });
+
 });
