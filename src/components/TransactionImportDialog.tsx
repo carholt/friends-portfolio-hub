@@ -7,8 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { buildPreviewRows, parseCsvRows, parseXlsxRows, type ParsedImportPreviewRow } from "@/lib/transaction-import";
-import { detectMapping, mapExchangeToPriceSymbol, parseDelimitedFile, type ImportMapping } from "@/lib/import-engine";
+import { buildPreviewRows, parseXlsxRows, type ParsedImportPreviewRow } from "@/lib/transaction-import";
+import { detectMapping, parseDelimitedFile, type ImportMapping } from "@/lib/import-engine";
+import { importTransactionsBatch } from "@/lib/transactions-batch-import";
 
 interface Props {
   open: boolean;
@@ -67,34 +68,6 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
     setStep(2);
   };
 
-  const ensureAssets = async (rows: ParsedImportPreviewRow[]) => {
-    const keys = [...new Set(rows.map((r) => `${r.tx.symbol_raw}|${r.tx.exchange_code || ""}`).filter(Boolean))];
-    const symbols = [...new Set(rows.map((r) => r.tx.symbol_raw).filter(Boolean) as string[])];
-    const { data: existing } = await supabase.from("assets").select("id,symbol,exchange_code").in("symbol", symbols);
-    const byKey = new Map<string, string>((existing || []).map((asset: any) => [`${String(asset.symbol).toUpperCase()}|${String(asset.exchange_code || "").toUpperCase()}`, asset.id]));
-
-    const missing = keys.filter((key) => !byKey.has(key));
-    if (missing.length > 0) {
-      const inserts = missing.map((key) => {
-        const [symbol, exchange] = key.split("|");
-        const normalized = mapExchangeToPriceSymbol(symbol, exchange);
-        return {
-          symbol,
-          name: symbol,
-          asset_type: "stock",
-          exchange: normalized.exchange_code,
-          exchange_code: normalized.exchange_code,
-          currency: "USD",
-          metadata_json: { price_symbol: normalized.price_symbol, exchange_code: normalized.exchange_code },
-        };
-      });
-      const { data: created } = await supabase.from("assets").insert(inserts).select("id,symbol,exchange_code");
-      (created || []).forEach((asset: any) => byKey.set(`${String(asset.symbol).toUpperCase()}|${String(asset.exchange_code || "").toUpperCase()}`, asset.id));
-    }
-
-    return byKey;
-  };
-
   const persistMapping = async (finalMapping: ImportMapping) => {
     const { data: auth } = await supabase.auth.getUser();
     const userId = auth.user?.id;
@@ -113,69 +86,22 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
     setBusy(true);
 
     const { data: auth } = await supabase.auth.getUser();
-    const ownerId = auth.user?.id;
-    if (!ownerId) {
+    if (!auth.user?.id) {
       toast.error("Not logged in");
       setBusy(false);
       return;
     }
 
-    const symbolMap = await ensureAssets(validRows);
-    const payload = validRows.map(({ tx }) => ({
-      portfolio_id: portfolioId,
-      owner_user_id: ownerId,
-      broker: tx.broker,
-      trade_id: tx.trade_id,
-      stable_hash: tx.stable_hash,
-      trade_type: tx.trade_type,
-      symbol_raw: tx.symbol_raw,
-      isin: tx.isin,
-      exchange_raw: tx.exchange_raw,
-      traded_at: tx.traded_at,
-      quantity: tx.quantity,
-      price: tx.price,
-      currency: tx.currency,
-      fx_rate: tx.fx_rate,
-      fees: tx.fees,
-      raw_row: tx.raw_row,
-      asset_id: symbolMap.get(`${tx.symbol_raw}|${tx.exchange_code || ""}`) || null,
-      metadata_json: { price_symbol: tx.price_symbol, exchange_code: tx.exchange_code },
-    }));
-
-    const withTradeId = payload.filter((row) => row.trade_id);
-    const withoutTradeId = payload.filter((row) => !row.trade_id && row.stable_hash);
-
-    if (withTradeId.length > 0) {
-      const { error: tradeIdError } = await supabase
-        .from("transactions" as never)
-        .upsert(withTradeId as never, { onConflict: "portfolio_id,broker,trade_id" } as never);
-      if (tradeIdError) {
-        toast.error(`Import failed: ${tradeIdError.message}`);
-        setBusy(false);
-        return;
-      }
-    }
-
-    if (withoutTradeId.length > 0) {
-      const { error: stableHashError } = await supabase
-        .from("transactions" as never)
-        .upsert(withoutTradeId as never, { onConflict: "portfolio_id,broker,stable_hash" } as never);
-      if (stableHashError) {
-        toast.error(`Import failed: ${stableHashError.message}`);
-        setBusy(false);
-        return;
-      }
-    }
-
-    const { error: recomputeError } = await supabase.rpc("recompute_holdings_from_transactions" as never, { _portfolio_id: portfolioId, _method: "avg_cost" } as never);
-    if (recomputeError) {
-      toast.error(`Failed to recompute holdings: ${recomputeError.message}`);
+    try {
+      const summary = await importTransactionsBatch(portfolioId, validRows);
+      await persistMapping(mapping);
+      toast.success(`Imported ${summary.processed} rows. Skipped ${summary.skipped + (previewRows.length - validRows.length)}. Holdings updated.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Import failed: ${message}`);
       setBusy(false);
       return;
     }
-
-    await persistMapping(mapping);
-    toast.success(`Imported ${validRows.length} rows. Skipped ${previewRows.length - validRows.length}. Holdings updated.`);
     onImported();
     onOpenChange(false);
     setBusy(false);
