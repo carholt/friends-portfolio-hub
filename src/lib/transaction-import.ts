@@ -7,6 +7,7 @@ export type BrokerKind = "nordea" | "avanza" | "unknown";
 export interface NormalizedTransaction {
   broker: string;
   trade_id: string | null;
+  stable_hash: string;
   trade_type: NormalizedTransactionType;
   symbol_raw: string | null;
   isin: string | null;
@@ -81,23 +82,43 @@ export function mapNordeaExchange(value?: string | null) {
   return { exchange_code: mapped.exchange_code, suffix: mapped.provider_symbol?.replace("TMP", "") || null };
 }
 
-const stableHash = (row: RawRow) => {
-  const str = Object.keys(row).sort().map((key) => `${key}:${normalize(row[key])}`).join("|");
-  let hash = 0;
-  for (let i = 0; i < str.length; i += 1) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
-  return `row-${hash.toString(16)}`;
+const stableStringPart = (value: unknown, transform?: (next: string) => string) => {
+  const normalized = normalize(value);
+  return transform ? transform(normalized) : normalized;
 };
+
+const formatStableNumberPart = (value: number | null) => (typeof value === "number" && Number.isFinite(value) ? value.toFixed(8) : "");
+
+const buildStableHashInput = (tx: Pick<NormalizedTransaction, "broker" | "trade_type" | "symbol_raw" | "isin" | "exchange_code" | "traded_at" | "quantity" | "price" | "currency" | "fees">) => [
+  stableStringPart(tx.broker, (next) => next.toLowerCase()),
+  stableStringPart(tx.trade_type, (next) => next.toLowerCase()),
+  stableStringPart(tx.symbol_raw, (next) => next.toUpperCase()),
+  stableStringPart(tx.isin, (next) => next.toUpperCase()),
+  stableStringPart(tx.exchange_code, (next) => next.toUpperCase()),
+  stableStringPart(tx.traded_at),
+  Number.isFinite(tx.quantity) ? tx.quantity.toFixed(8) : "",
+  formatStableNumberPart(tx.price),
+  stableStringPart(tx.currency, (next) => next.toUpperCase()),
+  formatStableNumberPart(tx.fees),
+].join("|");
+
+export function computeStableHashFromNormalizedFields(tx: Pick<NormalizedTransaction, "broker" | "trade_type" | "symbol_raw" | "isin" | "exchange_code" | "traded_at" | "quantity" | "price" | "currency" | "fees">) {
+  const input = buildStableHashInput(tx);
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  return `tx-${hash.toString(16)}`;
+}
 
 export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): ParsedImportPreviewRow[] {
   const seen = new Set<string>();
   const decimal = mapping.decimal;
 
   return rows.map((row) => {
-    const tradeId = normalize(row[mapping.columns.trade_id || ""]) || stableHash(row);
+    const tradeId = normalize(row[mapping.columns.trade_id || ""]) || null;
     const symbol = normalize(row[mapping.columns.symbol || ""]).toUpperCase() || null;
     const exchangeRaw = normalize(row[mapping.columns.exchange || ""]) || null;
     const exchangeMapping = mapExchangeToProviderSymbol(symbol, exchangeRaw);
-    const tx: NormalizedTransaction = {
+    const txBase = {
       broker: mapping.broker_key,
       trade_id: tradeId,
       trade_type: mapType(normalize(row[mapping.columns.trade_type || ""])),
@@ -110,22 +131,29 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
       quantity: parseNumberByLocale(normalize(row[mapping.columns.quantity || ""]), decimal) ?? 0,
       price: parseNumberByLocale(normalize(row[mapping.columns.price || ""]), decimal),
       currency: normalize(row[mapping.columns.currency || ""]).toUpperCase() || null,
-      fx_rate: null,
       fees: parseNumberByLocale(normalize(row[mapping.columns.fees || ""]), decimal),
+    };
+
+    const normalizedTx: NormalizedTransaction = {
+      ...txBase,
+      stable_hash: computeStableHashFromNormalizedFields(txBase),
+      fx_rate: null,
       raw_row: row,
     };
 
     const errors: string[] = [];
     if (!mapping.columns.symbol) errors.push("Could not detect ticker column");
-    if (tx.symbol_raw && !tx.exchange_code && ["TSX", "TSXV"].some((k) => (tx.exchange_raw || "").toUpperCase().includes(k))) {
+    if (normalizedTx.symbol_raw && !normalizedTx.exchange_code && ["TSX", "TSXV"].some((k) => (normalizedTx.exchange_raw || "").toUpperCase().includes(k))) {
       errors.push("Ticker present but exchange missing (required for TSXV/TSX)");
     }
-    if (!Number.isFinite(tx.quantity) || tx.quantity === 0) errors.push("Could not parse quantity");
-    if (!tx.traded_at) errors.push("Unknown date format");
+    if (!Number.isFinite(normalizedTx.quantity) || normalizedTx.quantity === 0) errors.push("Could not parse quantity");
+    if (!normalizedTx.traded_at) errors.push("Unknown date format");
 
-    const duplicateKey = `${tx.broker}:${tx.trade_id}`;
-    if (seen.has(duplicateKey)) errors.push("Duplicate trade id in file");
+    const duplicateKey = normalizedTx.trade_id
+      ? `${normalizedTx.broker}:trade:${normalizedTx.trade_id}`
+      : `${normalizedTx.broker}:stable:${normalizedTx.stable_hash}`;
+    if (seen.has(duplicateKey)) errors.push("Duplicate transaction in file");
     seen.add(duplicateKey);
-    return { tx, errors, duplicateKey };
+    return { tx: normalizedTx, errors, duplicateKey };
   });
 }
