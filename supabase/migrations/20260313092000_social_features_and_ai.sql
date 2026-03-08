@@ -1,7 +1,5 @@
 -- Portfolio privacy extension, social comparison RPCs, AI scan RPCs, symbol aliases, and performance indexes.
 
-ALTER TYPE public.portfolio_visibility ADD VALUE IF NOT EXISTS 'friends';
-
 CREATE OR REPLACE FUNCTION public.can_access_portfolio(_portfolio_id UUID)
 RETURNS BOOLEAN
 LANGUAGE sql
