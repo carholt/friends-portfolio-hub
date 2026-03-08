@@ -160,16 +160,17 @@ export const detectMapping = (headers: string[], sampleRows: Record<string, stri
   };
 };
 
-export const mapExchangeToProviderSymbol = (symbolRaw: string | null | undefined, exchangeRaw: string | null | undefined) => {
+export const mapExchangeToPriceSymbol = (symbolRaw: string | null | undefined, exchangeRaw: string | null | undefined) => {
   const symbol = clean(String(symbolRaw || "")).toUpperCase();
-  if (!symbol) return { exchange_code: null, provider_symbol: null };
+  if (!symbol) return { exchange_code: null, price_symbol: null };
 
   const exchangeKey = normalize(String(exchangeRaw || ""));
   const mapped = EXCHANGE_RULES[exchangeKey];
-  if (mapped) return { exchange_code: mapped.exchange_code, provider_symbol: `${symbol}${mapped.suffix}` };
-  if (exchangeKey === "tsx") return { exchange_code: "TSX", provider_symbol: `${symbol}.TO` };
-  if (exchangeKey === "tsxv") return { exchange_code: "TSXV", provider_symbol: `${symbol}.V` };
-  return { exchange_code: exchangeKey ? exchangeKey.toUpperCase() : null, provider_symbol: symbol };
+  if (mapped) return { exchange_code: mapped.exchange_code, price_symbol: `${symbol}:${mapped.exchange_code}` };
+  if (exchangeKey === "tsx") return { exchange_code: "TSX", price_symbol: `${symbol}:TSX` };
+  if (exchangeKey === "tsxv") return { exchange_code: "TSXV", price_symbol: `${symbol}:TSXV` };
+  const exchangeCode = exchangeKey ? exchangeKey.toUpperCase() : null;
+  return { exchange_code: exchangeCode, price_symbol: exchangeCode ? `${symbol}:${exchangeCode}` : symbol };
 };
 
 

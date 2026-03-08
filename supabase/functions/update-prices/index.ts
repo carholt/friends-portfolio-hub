@@ -8,6 +8,7 @@ type Asset = {
   currency: string;
   exchange?: string | null;
   exchange_code?: string | null;
+  price_symbol?: string | null;
   metadata_json?: Record<string, unknown> | null;
 };
 
@@ -20,18 +21,23 @@ const CHUNK_SIZE = 8;
 const normalize = (value?: string | null) => (value || "").trim().toUpperCase();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const buildProviderSymbolFallback = (asset: Asset) => {
+const buildPriceSymbolFallback = (asset: Asset) => {
   const symbol = normalize(asset.symbol);
   const exchangeCode = normalize(asset.exchange_code || asset.exchange || String(asset.metadata_json?.exchange_code || ""));
-  if (exchangeCode === "TSX") return `${symbol}.TO`;
-  if (exchangeCode === "TSXV") return `${symbol}.V`;
+  if (exchangeCode) return `${symbol}:${exchangeCode}`;
   return symbol;
 };
 
-const resolveProviderSymbol = (asset: Asset) => {
-  const fromMetadata = normalize(String(asset.metadata_json?.provider_symbol || ""));
-  if (fromMetadata) return fromMetadata;
-  return buildProviderSymbolFallback(asset);
+const resolvePriceSymbol = (asset: Asset) => {
+  const fromAsset = normalize((asset as Asset & { price_symbol?: string | null }).price_symbol || "");
+  if (fromAsset) return fromAsset;
+
+  const fallback = buildPriceSymbolFallback(asset);
+  if (fallback) return fallback;
+
+  const fromLegacyMetadata = normalize(String(asset.metadata_json?.provider_symbol || ""));
+  if (fromLegacyMetadata) return fromLegacyMetadata;
+  return normalize(asset.symbol);
 };
 
 Deno.serve(async (req) => {
@@ -63,7 +69,7 @@ Deno.serve(async (req) => {
 
     const { data: assets, error: assetsError } = await supabase
       .from("assets")
-      .select("id, symbol, asset_type, currency, exchange, exchange_code, metadata_json")
+      .select("id, symbol, asset_type, currency, exchange, exchange_code, price_symbol, metadata_json")
       .in("id", uniqueAssetIds);
     if (assetsError) throw assetsError;
 
@@ -73,14 +79,14 @@ Deno.serve(async (req) => {
 
     for (let i = 0; i < assetsToFetch.length; i += CHUNK_SIZE) {
       const chunk = assetsToFetch.slice(i, i + CHUNK_SIZE);
-      const symbols = chunk.map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolveProviderSymbol(asset))).join(",");
+      const symbols = chunk.map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolvePriceSymbol(asset))).join(",");
       let payload: Record<string, any> = {};
       try {
         const response = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols)}&apikey=${TWELVE_DATA_API_KEY}`);
         payload = await response.json();
       } catch (requestError) {
         for (const asset of chunk) {
-          const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolveProviderSymbol(asset);
+          const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolvePriceSymbol(asset);
           counts.errors += 1;
           if (skippedSymbols.length < 50) skippedSymbols.push({ symbol: key, reason: `request_failed:${requestError instanceof Error ? requestError.message : "unknown"}` });
         }
@@ -89,7 +95,7 @@ Deno.serve(async (req) => {
 
       const rows: Array<{ asset_id: string; price: number; currency: string; as_of_date: string; source: string }> = [];
       for (const asset of chunk) {
-        const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolveProviderSymbol(asset);
+        const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolvePriceSymbol(asset);
         const item = chunk.length === 1 ? payload : payload[key];
         const parsedPrice = Number(item?.price);
         const quoteCurrency = normalize(String(item?.currency || asset.currency || "")) || "USD";
