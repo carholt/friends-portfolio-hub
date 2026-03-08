@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import AppLayout from "@/components/AppLayout";
@@ -12,28 +12,48 @@ import { toast } from "sonner";
 
 export default function Groups() {
   const { user } = useAuth();
-  const [groups, setGroups] = useState<any[]>([]);
+  type GroupMembershipRow = { id: string; name: string; role: string };
+  type GroupPortfolio = {
+    id: string;
+    name: string;
+    holdings: Array<{ asset: { symbol: string | null } | null }> | null;
+    total: number;
+    absoluteReturn: number;
+    percentReturn: number;
+  };
+  type GroupMessage = {
+    id: string;
+    body: string;
+    created_at: string;
+    profile?: { display_name: string | null } | null;
+  };
+
+  const [groups, setGroups] = useState<GroupMembershipRow[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [groupPortfolios, setGroupPortfolios] = useState<any[]>([]);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [groupPortfolios, setGroupPortfolios] = useState<GroupPortfolio[]>([]);
+  const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [leaderboardMode, setLeaderboardMode] = useState<"percent" | "absolute">("percent");
   const [showCreate, setShowCreate] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!user) return;
     const { data: memberships } = await supabase
       .from("group_members")
       .select("group_id, role, group:groups(id, name)")
       .eq("user_id", user.id);
 
-    const g = memberships?.map((m) => ({ ...m.group, role: m.role })) || [];
+    const g = (memberships?.map((m) => {
+      const group = Array.isArray(m.group) ? m.group[0] : m.group;
+      if (!group) return null;
+      return { id: group.id, name: group.name, role: m.role };
+    }).filter((value): value is GroupMembershipRow => value !== null)) || [];
     setGroups(g);
     if (!selectedGroupId && g[0]?.id) setSelectedGroupId(g[0].id);
-  };
+  }, [selectedGroupId, user]);
 
-  const loadGroupData = async () => {
+  const loadGroupData = useCallback(async () => {
     if (!selectedGroupId) return;
     const { data: portfolios } = await supabase
       .from("portfolios")
@@ -43,7 +63,7 @@ export default function Groups() {
     const ids = (portfolios || []).map((p) => p.id);
     const { data: valuations } = ids.length
       ? await supabase.from("portfolio_valuations").select("portfolio_id,total_value,as_of_date").in("portfolio_id", ids).order("as_of_date", { ascending: false })
-      : { data: [] as any[] };
+      : { data: [] as Array<{ portfolio_id: string; total_value: number }> };
 
     const latest = new Map<string, number>();
     const first = new Map<string, number>();
@@ -52,7 +72,7 @@ export default function Groups() {
       if (!latest.has(v.portfolio_id)) latest.set(v.portfolio_id, Number(v.total_value));
     });
 
-    setGroupPortfolios((portfolios || []).map((p: any) => ({
+    setGroupPortfolios((portfolios || []).map((p) => ({
       ...p,
       total: latest.get(p.id) ?? 0,
       absoluteReturn: (latest.get(p.id) ?? 0) - (first.get(p.id) ?? (latest.get(p.id) ?? 0)),
@@ -60,17 +80,17 @@ export default function Groups() {
     })));
 
     const { data: board } = await supabase
-      .from("group_messages" as any)
+      .from("group_messages")
       .select("*, profile:profiles(display_name)")
       .eq("group_id", selectedGroupId)
       .order("created_at", { ascending: false })
       .limit(100);
 
-    setMessages(board || []);
-  };
+    setMessages((board || []) as GroupMessage[]);
+  }, [selectedGroupId]);
 
-  useEffect(() => { load(); }, [user]);
-  useEffect(() => { loadGroupData(); }, [selectedGroupId]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadGroupData(); }, [loadGroupData]);
 
   const createGroup = async () => {
     if (!user || !newGroupName.trim()) return;
@@ -85,7 +105,7 @@ export default function Groups() {
 
   const sendMessage = async () => {
     if (!user || !selectedGroupId || !newMessage.trim()) return;
-    const { error } = await supabase.from("group_messages" as any).insert({ group_id: selectedGroupId, user_id: user.id, body: newMessage.trim(), type: "message" });
+    const { error } = await supabase.from("group_messages").insert({ group_id: selectedGroupId, user_id: user.id, body: newMessage.trim(), type: "message" });
     if (error) toast.error(error.message);
     else {
       setNewMessage("");
@@ -117,7 +137,7 @@ export default function Groups() {
                   <Card key={p.id}><CardContent className="pt-4 space-y-1">
                     <div className="font-semibold">{p.name}</div>
                     <div className="text-sm">Total: {p.total.toFixed(2)}</div>
-                    <div className="text-xs text-muted-foreground">Top holdings: {(p.holdings || []).slice(0, 3).map((h: any) => h.asset?.symbol).join(", ") || "-"}</div>
+                    <div className="text-xs text-muted-foreground">Top holdings: {(p.holdings || []).slice(0, 3).map((h) => h.asset?.symbol).filter(Boolean).join(", ") || "-"}</div>
                   </CardContent></Card>
                 ))}
               </div>
