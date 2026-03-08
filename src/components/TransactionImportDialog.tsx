@@ -126,6 +126,7 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
       owner_user_id: ownerId,
       broker: tx.broker,
       trade_id: tx.trade_id,
+      stable_hash: tx.stable_hash,
       trade_type: tx.trade_type,
       symbol_raw: tx.symbol_raw,
       isin: tx.isin,
@@ -141,11 +142,29 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
       metadata_json: { price_symbol: tx.price_symbol, exchange_code: tx.exchange_code },
     }));
 
-    const { error } = await supabase.from("transactions" as never).upsert(payload as never, { onConflict: "portfolio_id,broker,trade_id" } as never);
-    if (error) {
-      toast.error(`Import failed: ${error.message}`);
-      setBusy(false);
-      return;
+    const withTradeId = payload.filter((row) => row.trade_id);
+    const withoutTradeId = payload.filter((row) => !row.trade_id && row.stable_hash);
+
+    if (withTradeId.length > 0) {
+      const { error: tradeIdError } = await supabase
+        .from("transactions" as never)
+        .upsert(withTradeId as never, { onConflict: "portfolio_id,broker,trade_id" } as never);
+      if (tradeIdError) {
+        toast.error(`Import failed: ${tradeIdError.message}`);
+        setBusy(false);
+        return;
+      }
+    }
+
+    if (withoutTradeId.length > 0) {
+      const { error: stableHashError } = await supabase
+        .from("transactions" as never)
+        .upsert(withoutTradeId as never, { onConflict: "portfolio_id,broker,stable_hash" } as never);
+      if (stableHashError) {
+        toast.error(`Import failed: ${stableHashError.message}`);
+        setBusy(false);
+        return;
+      }
     }
 
     const { error: recomputeError } = await supabase.rpc("recompute_holdings_from_transactions" as never, { _portfolio_id: portfolioId, _method: "avg_cost" } as never);
