@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { buildPreviewRows, parseCsvRows, parseXlsxRows, type ParsedImportPreviewRow } from "@/lib/transaction-import";
-import { detectMapping, mapExchangeToProviderSymbol, parseDelimitedFile, type ImportMapping } from "@/lib/import-engine";
+import { detectMapping, mapExchangeToPriceSymbol, parseDelimitedFile, type ImportMapping } from "@/lib/import-engine";
 
 interface Props {
   open: boolean;
@@ -77,7 +77,7 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
     if (missing.length > 0) {
       const inserts = missing.map((key) => {
         const [symbol, exchange] = key.split("|");
-        const normalized = mapExchangeToProviderSymbol(symbol, exchange);
+        const normalized = mapExchangeToPriceSymbol(symbol, exchange);
         return {
           symbol,
           name: symbol,
@@ -85,7 +85,7 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
           exchange: normalized.exchange_code,
           exchange_code: normalized.exchange_code,
           currency: "USD",
-          metadata_json: { provider_symbol: normalized.provider_symbol, exchange_code: normalized.exchange_code },
+          metadata_json: { price_symbol: normalized.price_symbol, exchange_code: normalized.exchange_code },
         };
       });
       const { data: created } = await supabase.from("assets").insert(inserts).select("id,symbol,exchange_code");

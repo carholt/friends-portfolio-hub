@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/nordea-transactions.csv?raw";
-import { detectDelimiter, detectMapping, mapExchangeToProviderSymbol, parseDelimitedFile, parseNumberByLocale, recomputeAvgCost } from "@/lib/import-engine";
+import { detectDelimiter, detectMapping, mapExchangeToPriceSymbol, parseDelimitedFile, parseNumberByLocale, recomputeAvgCost } from "@/lib/import-engine";
 
 describe("import-engine", () => {
   it("detects semicolon delimiter", () => {
@@ -19,9 +19,9 @@ describe("import-engine", () => {
     expect(parseNumberByLocale("1 234,56", ",")).toBeCloseTo(1234.56, 2);
   });
 
-  it("maps TSX and TSXV to provider symbols", () => {
-    expect(mapExchangeToProviderSymbol("AYA", "Toronto Stock Exchange").provider_symbol).toBe("AYA.TO");
-    expect(mapExchangeToProviderSymbol("AGX", "Toronto Venture Exchange").provider_symbol).toBe("AGX.V");
+  it("maps TSX and TSXV to canonical price symbols", () => {
+    expect(mapExchangeToPriceSymbol("AYA", "Toronto Stock Exchange").price_symbol).toBe("AYA:TSX");
+    expect(mapExchangeToPriceSymbol("AGX", "Toronto Venture Exchange").price_symbol).toBe("AGX:TSXV");
   });
 
   it("recomputes avg cost correctly", () => {
