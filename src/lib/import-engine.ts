@@ -1,5 +1,5 @@
 export type ImportKind = "transactions" | "holdings" | "unknown";
-export type BrokerKey = "nordea" | "avanza" | "unknown";
+export type BrokerKey = "nordea" | "avanza" | "interactive_brokers" | "degiro" | "unknown";
 
 export interface ImportMapping {
   kind: ImportKind;
@@ -102,12 +102,22 @@ export const detectMapping = (headers: string[], sampleRows: Record<string, stri
   const lowerHeaders = headers.map((header) => normalize(header));
   const nordeaSignals = ["Affärsnr", "Transaktionstyp", "Avslutsdatum", "Antal/Nominellt"].filter((candidate) => lowerHeaders.includes(normalize(candidate))).length;
   const avanzaSignals = ["Datum", "Typ av transaktion", "Antal", "Pris", "Belopp"].filter((candidate) => lowerHeaders.includes(normalize(candidate))).length;
+  const ibkrSignals = ["ClientAccountID", "Symbol", "Description", "TradeDate", "Quantity"].filter((candidate) => lowerHeaders.includes(normalize(candidate))).length;
+  const degiroSignals = ["Datum", "Tid", "Produkt", "ISIN", "Börs"].filter((candidate) => lowerHeaders.includes(normalize(candidate))).length;
 
   const hasTxSignals = headerIncludes(headers, ["trade", "affärsnr", "transaktionstyp", "price", "kurs", "datum"]);
   const hasHoldingsSignals = headerIncludes(headers, ["avg", "genomsnitt", "shares", "antal", "quantity", "average cost"]);
 
   const kind: ImportKind = hasTxSignals ? "transactions" : hasHoldingsSignals ? "holdings" : "unknown";
-  const broker_key: BrokerKey = nordeaSignals >= 3 ? "nordea" : avanzaSignals >= 3 ? "avanza" : "unknown";
+  const broker_key: BrokerKey = nordeaSignals >= 3
+    ? "nordea"
+    : avanzaSignals >= 3
+      ? "avanza"
+      : ibkrSignals >= 3
+        ? "interactive_brokers"
+        : degiroSignals >= 3
+          ? "degiro"
+          : "unknown";
 
   const decimal: "," | "." = sampleRows.some((row) => Object.values(row).some((value) => /\d+,\d+/.test(value))) ? "," : ".";
   const date_parser: "sv_date" | "iso" | "en_text" = sampleRows.some((row) => Object.values(row).some((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)))
@@ -123,9 +133,9 @@ export const detectMapping = (headers: string[], sampleRows: Record<string, stri
     name: pickHeader(headers, ["name", "namn", "instrument"]),
     isin: pickHeader(headers, ["isin"]),
     exchange: pickHeader(headers, ["marknad", "exchange", "börs"]),
-    date: pickHeader(headers, ["datum", "avslutsdatum", "trade date"]),
-    quantity: pickHeader(headers, ["antal", "quantity", "shares"]),
-    price: pickHeader(headers, ["kurs", "price"]),
+    date: pickHeader(headers, ["datum", "avslutsdatum", "trade date", "tradedate", "date"]),
+    quantity: pickHeader(headers, ["antal", "quantity", "shares", "aantal"]),
+    price: pickHeader(headers, ["kurs", "price", "pris"]),
     currency: pickHeader(headers, ["valuta", "currency"]),
     avg_cost: pickHeader(headers, ["genomsnitt", "avg"]),
     fees: pickHeader(headers, ["courtage", "avgift", "fees"]),

@@ -1,4 +1,4 @@
-export type BrokerType = "manual" | "avanza" | "nordea" | "vera_cash" | "binance";
+export type BrokerType = "manual" | "avanza" | "nordea" | "interactive_brokers" | "degiro" | "vera_cash" | "binance";
 
 export interface BrokerHoldingRow {
   symbol: string;
