@@ -30,6 +30,8 @@ interface AccountSelection {
 
 interface ResolverItem { isin: string; name: string; mic?: string; }
 
+interface ImportSummary { inserted: number; updated: number; skipped: number; errors: number; }
+
 interface Props { open: boolean; onOpenChange: (v: boolean) => void; portfolioId: string; onImported: () => void; }
 
 export default function ImportDialog({ open, onOpenChange, portfolioId, onImported }: Props) {
@@ -47,6 +49,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const [previewResolution, setPreviewResolution] = useState<Record<string, { status: SymbolResolutionStatus; reason?: string }>>({});
   const [importManualInvalid, setImportManualInvalid] = useState(false);
   const [importWarning, setImportWarning] = useState<string | null>(null);
+  const [lastImportSummary, setLastImportSummary] = useState<ImportSummary | null>(null);
   const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -85,6 +88,26 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     }
   };
 
+  const defaultImportSummary: ImportSummary = { inserted: 0, updated: 0, skipped: 0, errors: 0 };
+
+  const runSnapshotImport = async (targetPortfolioId: string, importRows: any[], importMode: ImportMode): Promise<ImportSummary> => {
+    const { data, error } = await supabase.rpc("import_holdings_snapshot", {
+      _portfolio_id: targetPortfolioId,
+      _mode: importMode,
+      _rows_json: importRows as any,
+    });
+
+    if (error) throw error;
+
+    const summary = (data ?? {}) as Partial<ImportSummary>;
+    return {
+      inserted: Number(summary.inserted ?? 0),
+      updated: Number(summary.updated ?? 0),
+      skipped: Number(summary.skipped ?? 0),
+      errors: Number(summary.errors ?? 0),
+    };
+  };
+
   const resetImport = () => {
     setStep(1);
     setRows([]);
@@ -97,6 +120,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     setImportWarning(null);
     setDetectedColumns([]);
     setImportManualInvalid(false);
+    setLastImportSummary(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -170,34 +194,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     reader.readAsText(file);
   };
 
-  const upsertHoldingRows = async (targetPortfolioId: string, importRows: any[], replacedPortfolios: Set<string>) => {
-    if (mode === "replace" && !replacedPortfolios.has(targetPortfolioId)) {
-      await supabase.from("holdings").delete().eq("portfolio_id", targetPortfolioId);
-      replacedPortfolios.add(targetPortfolioId);
-    }
 
-    for (const row of importRows) {
-      const { data: asset } = await supabase.from("assets").select("id").eq("symbol", row.symbol).maybeSingle();
-      const assetId = asset?.id || (await supabase.from("assets").insert({
-        symbol: row.symbol,
-        name: row.name || row.symbol,
-        asset_type: row.asset_type as any,
-        exchange: row.exchange || null,
-        currency: row.cost_currency,
-        metadata_json: row.metadata_json ?? null,
-      }).select("id").single()).data?.id;
-      if (!assetId) continue;
-
-      const { data: existing } = await supabase.from("holdings").select("id,quantity,avg_cost").eq("portfolio_id", targetPortfolioId).eq("asset_id", assetId).maybeSingle();
-      if (existing) {
-        const qty = mode === "merge" ? Number(existing.quantity) + row.quantity : row.quantity;
-        const avg = mode === "merge" ? ((Number(existing.quantity) * Number(existing.avg_cost)) + (row.quantity * row.avg_cost)) / qty : row.avg_cost;
-        await supabase.from("holdings").update({ quantity: qty, avg_cost: avg, cost_currency: row.cost_currency }).eq("id", existing.id);
-      } else {
-        await supabase.from("holdings").insert({ portfolio_id: targetPortfolioId, asset_id: assetId, quantity: row.quantity, avg_cost: row.avg_cost, cost_currency: row.cost_currency });
-      }
-    }
-  };
 
   useEffect(() => {
     const uniqueSymbols = [...new Set(validRows.map((row) => String(row.symbol || "").toUpperCase().trim()).filter(Boolean))];
@@ -231,88 +228,103 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const runImport = async () => {
     setBusy(true);
 
-    const hasInvalidPreview = validRows.some((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "invalid");
-    if (hasInvalidPreview && !importManualInvalid) {
-      setBusy(false);
-      toast.error("Some symbols are invalid/unresolvable. Resolve them or choose import anyway as manual/unpriced.");
-      return;
-    }
-
-    if (!detectedNordea) {
-      await upsertHoldingRows(portfolioId, validRows, new Set<string>());
-      await logAuditAction("import", "portfolio", portfolioId, { mode, valid_rows: validRows.length, total_rows: rows.length });
-      setBusy(false);
-      onOpenChange(false);
-      onImported();
-      toast.success(`Imported ${validRows.length} holdings.`);
-      return;
-    }
-
-    const unresolved = resolverItems.some((item) => !tickerResolutions[item.isin]?.trim());
-    if (unresolved) {
-      setBusy(false);
-      toast.error("Please resolve all Nordea ISINs to tickers before importing.");
-      return;
-    }
-
-    await supabase.functions.invoke("resolve-asset-ticker", {
-      body: {
-        mode: "apply",
-        resolutions: resolverItems.map((item) => {
-          const parsed = extractTickerAndExchange(tickerResolutions[item.isin] || "");
-          return { isin: item.isin, ticker: parsed.ticker, exchange: parsed.exchange, name: item.name, mic: item.mic };
-        }),
-      },
-    });
-
-    const importRows = applyTickerResolutionsToRows(validRows, tickerResolutions);
-
-    const { data: userData } = await supabase.auth.getUser();
-    if (!userData.user) {
-      setBusy(false);
-      toast.error("Could not identify user for Nordea import.");
-      return;
-    }
-
-    const replacedPortfolios = new Set<string>();
-    for (const group of nordeaAccounts) {
-      const selection = accountSelections[group.accountKey];
-      if (!selection) continue;
-
-      let targetPortfolioId = selection.target;
-      if (selection.target === "new") {
-        const { data: created, error } = await supabase.from("portfolios").insert({
-          owner_user_id: userData.user.id,
-          name: selection.portfolioName.trim(),
-          base_currency: selection.baseCurrency,
-          visibility: selection.visibility,
-          broker: "nordea",
-        }).select("id").single();
-
-        if (error || !created?.id) {
-          setBusy(false);
-          toast.error(`Could not create portfolio for ${group.accountName}.`);
-          return;
-        }
-
-        targetPortfolioId = created.id;
+    try {
+      const hasInvalidPreview = validRows.some((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "invalid");
+      if (hasInvalidPreview && !importManualInvalid) {
+        toast.error("Some symbols are invalid/unresolvable. Resolve them or choose import anyway as manual/unpriced.");
+        return;
       }
 
-      const accountRows = importRows.filter((row) => row.account_key === group.accountKey);
-      await upsertHoldingRows(targetPortfolioId, accountRows, replacedPortfolios);
-      await logAuditAction("import", "portfolio", targetPortfolioId, {
-        mode,
-        broker: "nordea",
-        account_key: group.accountKey,
-        valid_rows: accountRows.length,
-        total_rows: rows.length,
-      });
-    }
+      if (!detectedNordea) {
+        const summary = await runSnapshotImport(portfolioId, validRows, mode);
+        setLastImportSummary(summary);
+        await logAuditAction("import", "portfolio", portfolioId, {
+          mode,
+          valid_rows: validRows.length,
+          total_rows: rows.length,
+          ...summary,
+        });
+        onOpenChange(false);
+        onImported();
+        toast.success(`Import complete: ${summary.inserted} inserted, ${summary.updated} updated, ${summary.skipped} skipped, ${summary.errors} errors.`);
+        return;
+      }
 
-    setBusy(false);
-    onOpenChange(false);
-    onImported();
-    toast.success(`Imported ${validRows.length} holdings from Nordea.`);
+      const unresolved = resolverItems.some((item) => !tickerResolutions[item.isin]?.trim());
+      if (unresolved) {
+        toast.error("Please resolve all Nordea ISINs to tickers before importing.");
+        return;
+      }
+
+      await supabase.functions.invoke("resolve-asset-ticker", {
+        body: {
+          mode: "apply",
+          resolutions: resolverItems.map((item) => {
+            const parsed = extractTickerAndExchange(tickerResolutions[item.isin] || "");
+            return { isin: item.isin, ticker: parsed.ticker, exchange: parsed.exchange, name: item.name, mic: item.mic };
+          }),
+        },
+      });
+
+      const importRows = applyTickerResolutionsToRows(validRows, tickerResolutions);
+
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user) {
+        toast.error("Could not identify user for Nordea import.");
+        return;
+      }
+
+      let totalSummary: ImportSummary = { ...defaultImportSummary };
+      for (const group of nordeaAccounts) {
+        const selection = accountSelections[group.accountKey];
+        if (!selection) continue;
+
+        let targetPortfolioId = selection.target;
+        if (selection.target === "new") {
+          const { data: created, error } = await supabase.from("portfolios").insert({
+            owner_user_id: userData.user.id,
+            name: selection.portfolioName.trim(),
+            base_currency: selection.baseCurrency,
+            visibility: selection.visibility,
+            broker: "nordea",
+          }).select("id").single();
+
+          if (error || !created?.id) {
+            toast.error(`Could not create portfolio for ${group.accountName}.`);
+            return;
+          }
+
+          targetPortfolioId = created.id;
+        }
+
+        const accountRows = importRows.filter((row) => row.account_key === group.accountKey);
+        const summary = await runSnapshotImport(targetPortfolioId, accountRows, mode);
+        totalSummary = {
+          inserted: totalSummary.inserted + summary.inserted,
+          updated: totalSummary.updated + summary.updated,
+          skipped: totalSummary.skipped + summary.skipped,
+          errors: totalSummary.errors + summary.errors,
+        };
+        await logAuditAction("import", "portfolio", targetPortfolioId, {
+          mode,
+          broker: "nordea",
+          account_key: group.accountKey,
+          valid_rows: accountRows.length,
+          total_rows: rows.length,
+          ...summary,
+        });
+      }
+
+      setLastImportSummary(totalSummary);
+      onOpenChange(false);
+      onImported();
+      toast.success(`Nordea import complete: ${totalSummary.inserted} inserted, ${totalSummary.updated} updated, ${totalSummary.skipped} skipped, ${totalSummary.errors} errors.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed.";
+      toast.error(message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const allResolved = resolverItems.every((item) => tickerResolutions[item.isin]?.trim());
@@ -373,7 +385,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(4)}>Back</Button><Button onClick={() => setStep(6)} disabled={!allResolved}>Continue</Button></div>
         </div>}
 
-        {((!detectedNordea && step === 4) || (detectedNordea && step === 6)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p><div className="flex gap-2"><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
+        {((!detectedNordea && step === 4) || (detectedNordea && step === 6)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p>{lastImportSummary && <p className="text-xs text-muted-foreground">Last import summary: {lastImportSummary.inserted} inserted · {lastImportSummary.updated} updated · {lastImportSummary.skipped} skipped · {lastImportSummary.errors} errors</p>}<div className="flex gap-2"><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
       </DialogContent>
     </Dialog>
   );
