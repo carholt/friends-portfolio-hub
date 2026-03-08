@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
-import { Home, Briefcase, Trophy, Users, Settings, LogOut } from "lucide-react";
+import { Home, Briefcase, Trophy, Users, Settings, LogOut, UserPlus, GitCompareArrows, Lightbulb } from "lucide-react";
 import { useAppBootstrap } from "@/hooks/useAppBootstrap";
 import { DebugPanel } from "@/components/DebugPanel";
 
@@ -11,6 +11,9 @@ const navItems = [
   { to: "/portfolios", label: "Portfolios", icon: Briefcase },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy },
   { to: "/groups", label: "Groups", icon: Users },
+  { to: "/friends", label: "Friends", icon: UserPlus },
+  { to: "/compare", label: "Compare", icon: GitCompareArrows },
+  { to: "/ideas", label: "Ideas", icon: Lightbulb },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -66,7 +69,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t bg-background/95 p-2 backdrop-blur md:hidden">
-        <div className="grid grid-cols-5 gap-1">
+        <div className="grid grid-cols-4 gap-1">
           {navItems.map((item) => (
             <Link key={item.to} to={item.to}>
               <Button

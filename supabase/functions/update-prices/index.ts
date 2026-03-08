@@ -8,6 +8,13 @@ type Asset = {
   price_symbol: string | null;
 };
 
+type SymbolAlias = {
+  raw_symbol: string;
+  exchange: string;
+  canonical_symbol: string;
+  price_symbol: string;
+};
+
 type LatestPriceStamp = {
   asset_id: string;
   created_at: string;
@@ -60,6 +67,18 @@ Deno.serve(async (req) => {
       skipped_missing_price: 0,
     };
 
+    const { data: aliases, error: aliasesError } = await supabase
+      .from("symbol_aliases")
+      .select("raw_symbol,exchange,canonical_symbol,price_symbol");
+
+    if (aliasesError) throw aliasesError;
+
+    const aliasMap = new Map<string, SymbolAlias>();
+    for (const row of (aliases ?? []) as SymbolAlias[]) {
+      aliasMap.set(`${row.raw_symbol.toUpperCase()}::${row.exchange.toUpperCase()}`, row);
+    }
+
+
     if (assetIds.length === 0) {
       return new Response(JSON.stringify({ message: "No assets require updates", summary }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -98,7 +117,8 @@ Deno.serve(async (req) => {
 
     for (let i = 0; i < staleAssets.length; i += 1) {
       const asset = staleAssets[i];
-      const symbol = asset.price_symbol || `${asset.symbol}${asset.exchange_code ? `:${asset.exchange_code}` : ""}`;
+      const alias = aliasMap.get(`${asset.symbol.toUpperCase()}::${(asset.exchange_code || "").toUpperCase()}`);
+      const symbol = alias?.price_symbol || asset.price_symbol || `${asset.symbol}${asset.exchange_code ? `:${asset.exchange_code}` : ""}`;
 
       try {
         const response = await fetch(

@@ -18,6 +18,9 @@ import PublicPortfolio from "./pages/PublicPortfolio";
 import Leaderboard from "./pages/Leaderboard";
 import Groups from "./pages/Groups";
 import SettingsPage from "./pages/Settings";
+import FriendsPage from "./pages/Friends";
+import ComparePage from "./pages/Compare";
+import IdeasPage from "./pages/Ideas";
 import AssetCompanyPage from "./pages/AssetCompany";
 import NotFound from "./pages/NotFound";
 import { envError } from "@/config/env";
@@ -69,6 +72,9 @@ const App = () => {
                 <Route path="/leaderboard" element={<Leaderboard />} />
                 <Route path="/groups" element={<Groups />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/friends" element={<FriendsPage />} />
+                <Route path="/compare" element={<ComparePage />} />
+                <Route path="/ideas" element={<IdeasPage />} />
                 <Route path="/assets/:symbol" element={<AssetCompanyPage />} />
               </Route>
 

@@ -26,6 +26,15 @@ export default function Login() {
     setLoading(false);
   };
 
+
+
+  const handleOAuthLogin = async (provider: "google" | "apple" | "github") => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: `${window.location.origin}/home` },
+    });
+    if (error) toast.error(error.message);
+  };
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-hero p-4">
       <Card className="w-full max-w-md glass">
@@ -50,6 +59,11 @@ export default function Login() {
               {loading ? "Loggar in…" : "Logga in"}
             </Button>
           </form>
+          <div className="mt-4 grid grid-cols-1 gap-2">
+            <Button type="button" variant="outline" onClick={() => handleOAuthLogin("google")}>Continue with Google</Button>
+            <Button type="button" variant="outline" onClick={() => handleOAuthLogin("apple")}>Continue with Apple</Button>
+            <Button type="button" variant="outline" onClick={() => handleOAuthLogin("github")}>Continue with GitHub</Button>
+          </div>
           <div className="mt-4 text-center text-sm text-muted-foreground space-y-1">
             <p><Link to="/forgot-password" className="text-primary hover:underline">Glömt lösenord?</Link></p>
             <p>Inget konto? <Link to="/register" className="text-primary hover:underline">Skapa konto</Link></p>
