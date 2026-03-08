@@ -13,6 +13,8 @@ import { applyTickerResolutionsToRows, extractTickerAndExchange, normalizeTicker
 import { applyImportResolution, type SymbolResolutionStatus, type SymbolCandidate } from "@/lib/symbol-resolution";
 import { logAuditAction } from "@/lib/audit";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { parseDelimitedFile } from "@/lib/import-engine";
+import { detectHoldingsImportIssue } from "@/lib/import-guards";
 
 type ImportFormat = "csv" | "json" | "xlsx";
 type ImportMode = "replace" | "merge";
@@ -44,6 +46,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const [tickerSuggestions, setTickerSuggestions] = useState<Record<string, string[]>>({});
   const [previewResolution, setPreviewResolution] = useState<Record<string, { status: SymbolResolutionStatus; reason?: string }>>({});
   const [importManualInvalid, setImportManualInvalid] = useState(false);
+  const [importWarning, setImportWarning] = useState<string | null>(null);
+  const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const totalSteps = detectedNordea ? 6 : 4;
@@ -81,6 +85,21 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     }
   };
 
+  const resetImport = () => {
+    setStep(1);
+    setRows([]);
+    setDetectedNordea(false);
+    setNordeaAccounts([]);
+    setAccountSelections({});
+    setTickerResolutions({});
+    setTickerSuggestions({});
+    setPreviewResolution({});
+    setImportWarning(null);
+    setDetectedColumns([]);
+    setImportManualInvalid(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const parseFile = async (payload: string | ArrayBuffer, fileFormat: ImportFormat) => {
     if (fileFormat === "xlsx") {
       const spreadsheet = parseExcelImport(payload as ArrayBuffer);
@@ -115,6 +134,17 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     }
 
     const parsed = fileFormat === "json" ? parseJSONImport(payload as string).holdings : parseCSV(payload as string);
+    if (fileFormat === "csv") {
+      const analysis = parseDelimitedFile(payload as string);
+      setDetectedColumns(analysis.headers);
+      const issue = detectHoldingsImportIssue(payload as string);
+      if (issue) {
+        setImportWarning(issue);
+        if (issue.includes("transaction export")) return;
+      } else {
+        setImportWarning(null);
+      }
+    }
     setDetectedNordea(false);
     setNordeaAccounts([]);
     setAccountSelections({});
@@ -288,12 +318,12 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const allResolved = resolverItems.every((item) => tickerResolutions[item.isin]?.trim());
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetImport(); }}>
       <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Import holdings (Step {step}/{totalSteps})</DialogTitle></DialogHeader>
 
-        {step === 1 && <div className="space-y-3"><p className="text-sm">Choose file format.</p><Select value={format} onValueChange={(v) => setFormat(v as ImportFormat)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="csv">CSV (symbol,quantity required)</SelectItem><SelectItem value="json">JSON</SelectItem><SelectItem value="xlsx">Excel (.xlsx)</SelectItem></SelectContent></Select><Button onClick={() => setStep(2)}>Continue</Button></div>}
-        {step === 2 && <div className="space-y-3"><p className="text-sm">Upload your {format.toUpperCase()} file.</p><div className="border-dashed border rounded p-10 text-center cursor-pointer" onClick={() => fileInputRef.current?.click()}><Upload className="mx-auto mb-2" />Click to upload</div><input ref={fileInputRef} type="file" accept={format === "csv" ? ".csv" : format === "json" ? ".json" : ".xlsx"} className="hidden" onChange={onUpload} /><Button variant="outline" onClick={() => setStep(1)}>Back</Button></div>}
+        {step === 1 && <div className="space-y-3"><p className="text-sm">Import mode: <span className="font-medium">Import holdings</span></p><p className="text-xs text-muted-foreground">Transaction files are not supported in this dialog. Use "Import transactions".</p><p className="text-sm">Choose file format.</p><Select value={format} onValueChange={(v) => setFormat(v as ImportFormat)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="csv">CSV (symbol,quantity required)</SelectItem><SelectItem value="json">JSON</SelectItem><SelectItem value="xlsx">Excel (.xlsx)</SelectItem></SelectContent></Select><div className="flex gap-2"><Button onClick={() => setStep(2)}>Continue</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
+        {step === 2 && <div className="space-y-3"><p className="text-sm">Upload your {format.toUpperCase()} file.</p><div className="border-dashed border rounded p-10 text-center cursor-pointer" onClick={() => fileInputRef.current?.click()}><Upload className="mx-auto mb-2" />Click to upload</div><input ref={fileInputRef} type="file" accept={format === "csv" ? ".csv" : format === "json" ? ".json" : ".xlsx"} className="hidden" onChange={onUpload} />{importWarning && <p className="text-sm text-destructive">{importWarning}</p>}{detectedColumns.length > 0 && <p className="text-xs text-muted-foreground">Detected columns: {detectedColumns.join(", ")}</p>}<div className="flex gap-2"><Button variant="outline" onClick={() => setStep(1)}>Back</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
 
         {step === 3 && <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -303,7 +333,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
             </div>
             <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
           </div>
-          <Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead><TableHead>Resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
+          <p className="text-xs text-muted-foreground">Current mapping: symbol→symbol, quantity→quantity, avg cost→avg_cost</p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead><TableHead>Resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
           <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={importManualInvalid} onChange={(e) => setImportManualInvalid(e.target.checked)} />Import anyway as manual/unpriced for invalid symbols</label>
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(4)} disabled={validRows.length === 0}>Continue</Button></div>
         </div>}
@@ -343,7 +373,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(4)}>Back</Button><Button onClick={() => setStep(6)} disabled={!allResolved}>Continue</Button></div>
         </div>}
 
-        {((!detectedNordea && step === 4) || (detectedNordea && step === 6)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button></div>}
+        {((!detectedNordea && step === 4) || (detectedNordea && step === 6)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p><div className="flex gap-2"><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
       </DialogContent>
     </Dialog>
   );

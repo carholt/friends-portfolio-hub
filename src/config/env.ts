@@ -2,22 +2,24 @@ const requiredEnvVars = ["VITE_SUPABASE_URL", "VITE_SUPABASE_PUBLISHABLE_KEY"] a
 
 type EnvVarName = (typeof requiredEnvVars)[number];
 
-const missingEnvVars = requiredEnvVars.filter((name) => {
-  const value = import.meta.env[name];
-  return !value || String(value).trim().length === 0;
-});
+type EnvLike = Record<string, unknown>;
 
-function getEnvVar(name: EnvVarName): string {
-  const value = import.meta.env[name];
-  return value && String(value).trim().length > 0 ? value : "";
+function getEnvVar(source: EnvLike, name: EnvVarName): string {
+  const value = source[name as keyof EnvLike];
+  return value && String(value).trim().length > 0 ? String(value) : "";
+}
+
+export function getEnvError(source: EnvLike): string | null {
+  const missingEnvVars = requiredEnvVars.filter((name) => !getEnvVar(source, name));
+  return missingEnvVars.length > 0
+    ? `Missing required environment variables: ${missingEnvVars.join(", ")}`
+    : null;
 }
 
 export const env = {
-  supabaseUrl: getEnvVar("VITE_SUPABASE_URL"),
-  supabaseAnonKey: getEnvVar("VITE_SUPABASE_PUBLISHABLE_KEY"),
+  supabaseUrl: getEnvVar(import.meta.env as EnvLike, "VITE_SUPABASE_URL"),
+  supabaseAnonKey: getEnvVar(import.meta.env as EnvLike, "VITE_SUPABASE_PUBLISHABLE_KEY"),
   paywallEnabled: String(import.meta.env.VITE_PAYWALL_ENABLED || "false").toLowerCase() === "true",
 };
 
-export const envError = missingEnvVars.length > 0
-  ? `Missing required environment variables: ${missingEnvVars.join(", ")}`
-  : null;
+export const envError = getEnvError(import.meta.env as EnvLike);

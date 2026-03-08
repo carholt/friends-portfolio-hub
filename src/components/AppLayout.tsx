@@ -3,6 +3,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Home, Briefcase, Trophy, Users, Settings, LogOut } from "lucide-react";
+import { useAppBootstrap } from "@/hooks/useAppBootstrap";
+import { DebugPanel } from "@/components/DebugPanel";
 
 const navItems = [
   { to: "/home", label: "Home", icon: Home },
@@ -16,11 +18,15 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const { user, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const { data: bootstrap } = useAppBootstrap();
 
   const handleSignOut = async () => {
     await signOut();
     navigate("/");
   };
+
+  const appEnv = import.meta.env.MODE;
+  const appVersion = import.meta.env.VITE_APP_VERSION || import.meta.env.VITE_COMMIT_HASH || "dev";
 
   return (
     <div className="min-h-screen bg-background">
@@ -47,7 +53,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </nav>
         </aside>
 
-        <main className="w-full">{children}</main>
+        <main className="w-full space-y-4">
+          {bootstrap?.profileMissing && (
+            <div className="rounded-md border border-amber-500/50 bg-amber-50 p-3 text-sm text-amber-900">
+              We’re still setting up your account.
+            </div>
+          )}
+          {children}
+          <DebugPanel bootstrap={bootstrap} />
+          <div className="pt-2 text-xs text-muted-foreground">Environment: {appEnv} · Version: {appVersion}</div>
+        </main>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t bg-background/95 p-2 backdrop-blur md:hidden">

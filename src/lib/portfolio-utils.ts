@@ -243,13 +243,13 @@ export function validateImportRows(rows: any[]): ParsedImportRow[] {
     const errors: string[] = [];
 
     if (!symbol || !/^[A-Z0-9.\-/]{1,20}$/.test(symbol)) {
-      errors.push("Ogiltig symbol");
+      errors.push("Unsupported broker format");
     }
     if (!ALLOWED_ASSET_TYPES.has(assetType)) {
       errors.push("Ogiltig tillgångstyp");
     }
     if (!Number.isFinite(quantity) || quantity <= 0) {
-      errors.push("Antal måste vara > 0");
+      errors.push("Could not parse quantity");
     }
     if (!Number.isFinite(avgCost) || avgCost < 0) {
       errors.push("Snittpris måste vara >= 0");

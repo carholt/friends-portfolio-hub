@@ -37,8 +37,10 @@ const queryClient = new QueryClient({
 const App = () => {
   if (envError) {
     return (
-      <div className="max-w-xl mx-auto mt-24 px-4">
-        <ErrorState title="Environment setup needed" message={envError} actionLabel="Reload" onAction={() => window.location.reload()} />
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="max-w-xl w-full">
+          <ErrorState title="Environment setup needed" message={`${envError}. Please set env vars and redeploy.`} actionLabel="Reload" onAction={() => window.location.reload()} />
+        </div>
       </div>
     );
   }
