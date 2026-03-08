@@ -4,12 +4,13 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 type Asset = {
   id: string;
   symbol: string;
-  asset_type: string;
-  currency: string;
-  exchange?: string | null;
-  exchange_code?: string | null;
-  price_symbol?: string | null;
-  metadata_json?: Record<string, unknown> | null;
+  exchange_code: string | null;
+  price_symbol: string | null;
+};
+
+type LatestPriceStamp = {
+  asset_id: string;
+  created_at: string;
 };
 
 const corsHeaders = {
@@ -17,126 +18,134 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const CHUNK_SIZE = 8;
-const normalize = (value?: string | null) => (value || "").trim().toUpperCase();
+const MAX_CALLS_PER_SECOND = 8;
+const API_DELAY_MS = Math.ceil(1000 / MAX_CALLS_PER_SECOND);
+const STALE_AFTER_MS = 10 * 60 * 1000;
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const buildPriceSymbolFallback = (asset: Asset) => {
-  const symbol = normalize(asset.symbol);
-  const exchangeCode = normalize(asset.exchange_code || asset.exchange || String(asset.metadata_json?.exchange_code || ""));
-  if (exchangeCode) return `${symbol}:${exchangeCode}`;
-  return symbol;
-};
-
-const resolvePriceSymbol = (asset: Asset) => {
-  const fromAsset = normalize((asset as Asset & { price_symbol?: string | null }).price_symbol || "");
-  if (fromAsset) return fromAsset;
-
-  const fallback = buildPriceSymbolFallback(asset);
-  if (fallback) return fallback;
-
-  const fromLegacyMetadata = normalize(String(asset.metadata_json?.provider_symbol || ""));
-  if (fromLegacyMetadata) return fromLegacyMetadata;
-  return normalize(asset.symbol);
-};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-  const TWELVE_DATA_API_KEY = Deno.env.get("TWELVE_DATA_API_KEY");
-  if (!TWELVE_DATA_API_KEY) {
-    return new Response(JSON.stringify({ error: "TWELVE_DATA_API_KEY not configured" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  const apiKey = Deno.env.get("TWELVE_DATA_API_KEY");
+  if (!apiKey) {
+    return new Response(JSON.stringify({ error: "TWELVE_DATA_API_KEY not configured" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
-  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  );
 
   try {
-    const today = new Date().toISOString().split("T")[0];
-    const counts = { assets_considered: 0, priced: 0, skipped_no_quote: 0, errors: 0 };
-    const skippedSymbols: Array<{ symbol: string; reason: string }> = [];
+    const today = new Date().toISOString().slice(0, 10);
+    const nowMs = Date.now();
 
-    const { data: activeHoldings, error: holdingsError } = await supabase.from("holdings").select("portfolio_id,asset_id,quantity").gt("quantity", 0).limit(100000);
-    if (holdingsError) throw holdingsError;
+    const { data: assets, error: assetsError } = await supabase
+      .from("assets")
+      .select("id,symbol,exchange_code,price_symbol")
+      .not("price_symbol", "is", null);
 
-    const uniqueAssetIds = [...new Set((activeHoldings || []).map((h) => h.asset_id))];
-    counts.assets_considered = uniqueAssetIds.length;
+    if (assetsError) throw assetsError;
 
-    if (uniqueAssetIds.length === 0) {
-      return new Response(JSON.stringify({ message: "No holdings/assets to update", counts, skipped_symbols: [] }), {
+    const assetIds = (assets ?? []).map((asset) => asset.id);
+    const summary = {
+      assets_considered: assetIds.length,
+      assets_stale: 0,
+      prices_upserted: 0,
+      api_errors: 0,
+      skipped_missing_price: 0,
+    };
+
+    if (assetIds.length === 0) {
+      return new Response(JSON.stringify({ message: "No assets require updates", summary }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const { data: assets, error: assetsError } = await supabase
-      .from("assets")
-      .select("id, symbol, asset_type, currency, exchange, exchange_code, price_symbol, metadata_json")
-      .in("id", uniqueAssetIds);
-    if (assetsError) throw assetsError;
+    const { data: priceStamps, error: stampError } = await supabase
+      .from("prices")
+      .select("asset_id,created_at")
+      .in("asset_id", assetIds)
+      .order("created_at", { ascending: false });
 
-    const { data: existingPrices } = await supabase.from("prices").select("asset_id").eq("as_of_date", today);
-    const alreadyPriced = new Set(existingPrices?.map((price) => price.asset_id) || []);
-    const assetsToFetch = (assets || []).filter((asset) => !alreadyPriced.has(asset.id)) as Asset[];
+    if (stampError) throw stampError;
 
-    for (let i = 0; i < assetsToFetch.length; i += CHUNK_SIZE) {
-      const chunk = assetsToFetch.slice(i, i + CHUNK_SIZE);
-      const symbols = chunk.map((asset) => (asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolvePriceSymbol(asset))).join(",");
-      let payload: Record<string, any> = {};
+    const latestByAsset = new Map<string, string>();
+    for (const row of (priceStamps ?? []) as LatestPriceStamp[]) {
+      if (!latestByAsset.has(row.asset_id)) latestByAsset.set(row.asset_id, row.created_at);
+    }
+
+    const staleAssets = (assets as Asset[]).filter((asset) => {
+      const latest = latestByAsset.get(asset.id);
+      if (!latest) return true;
+      return (nowMs - new Date(latest).getTime()) > STALE_AFTER_MS;
+    });
+
+    summary.assets_stale = staleAssets.length;
+
+    const rowsToUpsert: Array<{
+      asset_id: string;
+      price: number;
+      currency: string;
+      price_date: string;
+      as_of_date: string;
+      source: string;
+    }> = [];
+
+    for (let i = 0; i < staleAssets.length; i += 1) {
+      const asset = staleAssets[i];
+      const symbol = asset.price_symbol || `${asset.symbol}${asset.exchange_code ? `:${asset.exchange_code}` : ""}`;
+
       try {
-        const response = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols)}&apikey=${TWELVE_DATA_API_KEY}`);
-        payload = await response.json();
-      } catch (requestError) {
-        for (const asset of chunk) {
-          const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolvePriceSymbol(asset);
-          counts.errors += 1;
-          if (skippedSymbols.length < 50) skippedSymbols.push({ symbol: key, reason: `request_failed:${requestError instanceof Error ? requestError.message : "unknown"}` });
-        }
-        continue;
-      }
-
-      const rows: Array<{ asset_id: string; price: number; currency: string; as_of_date: string; source: string }> = [];
-      for (const asset of chunk) {
-        const key = asset.asset_type === "metal" ? `${asset.symbol}/USD` : resolvePriceSymbol(asset);
-        const item = chunk.length === 1 ? payload : payload[key];
-        const parsedPrice = Number(item?.price);
-        const quoteCurrency = normalize(String(item?.currency || asset.currency || "")) || "USD";
+        const response = await fetch(
+          `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`,
+        );
+        const payload = await response.json() as { price?: string; currency?: string };
+        const parsedPrice = Number(payload.price);
 
         if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
-          rows.push({ asset_id: asset.id, price: parsedPrice, currency: quoteCurrency, as_of_date: today, source: "twelve_data" });
-          counts.priced += 1;
+          rowsToUpsert.push({
+            asset_id: asset.id,
+            price: parsedPrice,
+            currency: (payload.currency || "USD").toUpperCase(),
+            price_date: today,
+            as_of_date: today,
+            source: "twelve_data",
+          });
         } else {
-          counts.skipped_no_quote += 1;
-          if (skippedSymbols.length < 50) skippedSymbols.push({ symbol: key, reason: item?.message || "No price source yet" });
+          summary.skipped_missing_price += 1;
         }
+      } catch (_error) {
+        summary.api_errors += 1;
       }
 
-      if (rows.length > 0) {
-        const { error: upsertError } = await supabase.from("prices").upsert(rows, { onConflict: "asset_id,as_of_date" });
-        if (upsertError) throw upsertError;
-      }
-      if (i + CHUNK_SIZE < assetsToFetch.length) await sleep(1200);
+      if (i < staleAssets.length - 1) await sleep(API_DELAY_MS);
     }
 
-    const portfolioTotals = new Map<string, number>();
-    for (const holding of activeHoldings || []) {
-      const priceRow = (await supabase.from("prices").select("price").eq("asset_id", holding.asset_id).eq("as_of_date", today).maybeSingle()).data;
-      const value = Number(holding.quantity || 0) * Number(priceRow?.price || 0);
-      portfolioTotals.set(holding.portfolio_id, (portfolioTotals.get(holding.portfolio_id) || 0) + value);
+    if (rowsToUpsert.length > 0) {
+      const { error: upsertError } = await supabase
+        .from("prices")
+        .upsert(rowsToUpsert, { onConflict: "asset_id,price_date" });
+
+      if (upsertError) throw upsertError;
+      summary.prices_upserted = rowsToUpsert.length;
     }
 
-    const valuationRows = [...portfolioTotals.entries()].map(([portfolio_id, total_value]) => ({ portfolio_id, total_value, currency: "SEK", as_of_date: today }));
-    if (valuationRows.length > 0) {
-      await supabase.from("portfolio_valuations").upsert(valuationRows, { onConflict: "portfolio_id,as_of_date" });
-    }
+    const { error: refreshError } = await supabase.rpc("refresh_portfolio_valuations");
+    if (refreshError) throw refreshError;
 
-    return new Response(JSON.stringify({ message: "Prices update finished", summary: counts, skipped_symbols: skippedSymbols }), {
+    return new Response(JSON.stringify({ message: "Prices updated", summary }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("update-prices error", error);
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 });
