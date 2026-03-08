@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { env } from "@/config/env";
+import { Link } from "react-router-dom";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -98,6 +99,17 @@ export default function SettingsPage() {
             <Button variant="outline" onClick={() => toast.info("Disconnect provider is only available for OAuth connections.")}>Disconnect provider</Button>
             <Button variant="destructive" onClick={() => toast.warning("Account deletion flow is not implemented yet. Contact support.")}>Delete account (placeholder)</Button>
           </div>
+        </CardContent>
+      </Card>
+
+
+
+      <Card className="max-w-lg mt-6">
+        <CardHeader><CardTitle>Symbol resolution admin</CardTitle></CardHeader>
+        <CardContent>
+          <Button asChild variant="outline" className="w-full">
+            <Link to="/settings/symbol-resolution">Open symbol resolution tool</Link>
+          </Button>
         </CardContent>
       </Card>
 

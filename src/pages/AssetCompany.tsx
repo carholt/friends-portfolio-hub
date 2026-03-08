@@ -94,6 +94,29 @@ export default function AssetCompanyPage() {
     }
   });
 
+
+  const { data: priceDiagnostics } = useQuery({
+    queryKey: ["asset-price-diagnostics", data?.asset?.id],
+    enabled: !!data?.asset?.id,
+    queryFn: async () => {
+      const { data: assetRow } = await (supabase as any)
+        .from("assets")
+        .select("id,symbol,exchange_code,price_symbol,instrument_id")
+        .eq("id", data!.asset!.id)
+        .maybeSingle();
+
+      if (!assetRow?.instrument_id) return { asset: assetRow, instrument: null, latest: null, override: null };
+
+      const [{ data: instrument }, { data: latest }, { data: override }] = await Promise.all([
+        (supabase as any).from("market_instruments").select("id,canonical_symbol,exchange_code,price_symbol,last_price_at").eq("id", assetRow.instrument_id).maybeSingle(),
+        (supabase as any).from("market_prices").select("price_timestamp,currency,price").eq("instrument_id", assetRow.instrument_id).order("price_timestamp", { ascending: false }).limit(1).maybeSingle(),
+        (supabase as any).from("symbol_aliases").select("resolution_source,is_active").eq("instrument_id", assetRow.instrument_id).eq("resolution_source", "manual_override").eq("is_active", true).limit(1).maybeSingle(),
+      ]);
+
+      return { asset: assetRow, instrument: instrument || null, latest: latest || null, override: override || null };
+    },
+  });
+
   const latest = reports[0] || null;
   const latestCompleted = reports.find((row) => row.status === "completed" && isCompanyAiReport(row.report));
   const latestReport = latestCompleted?.report as CompanyAiReport | undefined;
@@ -185,6 +208,21 @@ export default function AssetCompanyPage() {
 
       <div className="space-y-4">
         <Card><CardHeader><CardTitle>{data.company.name} ({data.asset.symbol})</CardTitle></CardHeader><CardContent className="grid gap-2 sm:grid-cols-2 text-sm"><p>Exchange: {data.asset.exchange || "—"}</p><p>Lifecycle stage: {data.company.lifecycle_stage}</p><p>Tier: {data.company.tier}</p><p>Jurisdiction: {data.company.jurisdiction || "—"}</p><p>Started: {data.company.started_year || "—"}</p></CardContent></Card>
+
+
+
+        <Card>
+          <CardHeader><CardTitle>Price resolution diagnostics</CardTitle></CardHeader>
+          <CardContent className="grid gap-2 sm:grid-cols-2 text-sm">
+            <p><span className="font-medium">canonical_symbol:</span> {priceDiagnostics?.instrument?.canonical_symbol || "—"}</p>
+            <p><span className="font-medium">exchange_code:</span> {priceDiagnostics?.instrument?.exchange_code || "—"}</p>
+            <p><span className="font-medium">price_symbol:</span> {priceDiagnostics?.instrument?.price_symbol || priceDiagnostics?.asset?.price_symbol || "—"}</p>
+            <p><span className="font-medium">linked instrument:</span> {priceDiagnostics?.asset?.instrument_id || "—"}</p>
+            <p><span className="font-medium">latest price timestamp:</span> {priceDiagnostics?.latest?.price_timestamp || priceDiagnostics?.instrument?.last_price_at || "—"}</p>
+            <p><span className="font-medium">resolution source:</span> {priceDiagnostics?.override ? "manual_override" : "auto/imported"}</p>
+            <p><span className="font-medium">manual override exists:</span> {priceDiagnostics?.override ? "yes" : "no"}</p>
+          </CardContent>
+        </Card>
 
         <Card><CardHeader><CardTitle>Metrics</CardTitle></CardHeader><CardContent>
           <Table><TableHeader><TableRow><TableHead>Metric</TableHead><TableHead>Value</TableHead><TableHead>As of</TableHead><TableHead>Source</TableHead></TableRow></TableHeader><TableBody>{data.metrics.map((m: MetricRow) => <TableRow key={m.id}><TableCell>{m.metric_key}</TableCell><TableCell>{m.value_number} {m.unit || ""}</TableCell><TableCell>{m.as_of_date}</TableCell><TableCell><a className="underline" href={m.source_url || "#"} target="_blank" rel="noreferrer">{m.source_title || "Source"}</a></TableCell></TableRow>)}</TableBody></Table>
