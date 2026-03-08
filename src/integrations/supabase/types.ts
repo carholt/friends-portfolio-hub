@@ -379,6 +379,10 @@ export type Database = {
     Functions: {
       can_access_portfolio: { Args: { _portfolio_id: string }; Returns: boolean }
       can_view_portfolio: { Args: { _portfolio_id: string }; Returns: boolean }
+      import_holdings_snapshot: {
+        Args: { _mode: string; _portfolio_id: string; _rows_json: Json }
+        Returns: Json
+      }
       get_leaderboard: {
         Args: { _period?: string }
         Returns: {

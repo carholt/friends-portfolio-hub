@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { detectMapping, mapExchangeToProviderSymbol, parseDelimitedFile, parseNumberByLocale, type ImportMapping } from "@/lib/import-engine";
+import { detectMapping, mapExchangeToPriceSymbol, parseDelimitedFile, parseNumberByLocale, type ImportMapping } from "@/lib/import-engine";
 
 export type NormalizedTransactionType = "buy" | "sell" | "dividend" | "fee" | "fx" | "unknown";
 export type BrokerKind = "nordea" | "avanza" | "unknown";
@@ -13,7 +13,7 @@ export interface NormalizedTransaction {
   isin: string | null;
   exchange_raw: string | null;
   exchange_code: string | null;
-  provider_symbol: string | null;
+  price_symbol: string | null;
   traded_at: string | null;
   quantity: number;
   price: number | null;
@@ -73,13 +73,13 @@ export function parseXlsxRows(fileData: ArrayBuffer): RawRow[] {
   return XLSX.utils.sheet_to_json<RawRow>(firstSheet, { defval: null, raw: false });
 }
 
-export function buildProviderSymbol(symbol: string | null | undefined, exchangeCode?: string | null): string | null {
-  return mapExchangeToProviderSymbol(symbol, exchangeCode).provider_symbol;
+export function buildPriceSymbol(symbol: string | null | undefined, exchangeCode?: string | null): string | null {
+  return mapExchangeToPriceSymbol(symbol, exchangeCode).price_symbol;
 }
 
 export function mapNordeaExchange(value?: string | null) {
-  const mapped = mapExchangeToProviderSymbol("TMP", value);
-  return { exchange_code: mapped.exchange_code, suffix: mapped.provider_symbol?.replace("TMP", "") || null };
+  const mapped = mapExchangeToPriceSymbol("TMP", value);
+  return { exchange_code: mapped.exchange_code, price_symbol: mapped.price_symbol };
 }
 
 const stableHash = (row: RawRow) => {
@@ -122,8 +122,8 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
     const tradeId = normalize(row[mapping.columns.trade_id || ""]) || null;
     const symbol = normalize(row[mapping.columns.symbol || ""]).toUpperCase() || null;
     const exchangeRaw = normalize(row[mapping.columns.exchange || ""]) || null;
-    const exchangeMapping = mapExchangeToProviderSymbol(symbol, exchangeRaw);
-    const txBase = {
+    const exchangeMapping = mapExchangeToPriceSymbol(symbol, exchangeRaw);
+    const tx: NormalizedTransaction = {
       broker: mapping.broker_key,
       trade_id: tradeId,
       trade_type: mapType(normalize(row[mapping.columns.trade_type || ""])),
@@ -131,7 +131,7 @@ export function buildPreviewRows(rows: RawRow[], mapping: ImportMapping): Parsed
       isin: normalize(row[mapping.columns.isin || ""]) || null,
       exchange_raw: exchangeRaw,
       exchange_code: exchangeMapping.exchange_code,
-      provider_symbol: exchangeMapping.provider_symbol,
+      price_symbol: exchangeMapping.price_symbol,
       traded_at: parseDate(row[mapping.columns.date || ""], mapping.date_parser),
       quantity: parseNumberByLocale(normalize(row[mapping.columns.quantity || ""]), decimal) ?? 0,
       price: parseNumberByLocale(normalize(row[mapping.columns.price || ""]), decimal),

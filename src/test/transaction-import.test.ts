@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { buildPreviewRows, buildProviderSymbol, computeStableHashFromNormalizedFields, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
+import { buildPreviewRows, buildPriceSymbol, detectBrokerByHeaders, mapNordeaExchange, parseCsvRows } from "@/lib/transaction-import";
 import { calculateHoldingWithFees } from "@/lib/transactions";
 import { detectMapping, type ImportMapping } from "@/lib/import-engine";
 
@@ -19,11 +19,11 @@ describe("Nordea transaction import parsing", () => {
     expect(preview.every((row) => row.errors.length === 0)).toBe(true);
   });
 
-  it("maps TSX/TSXV and provider symbol suffixes", () => {
-    expect(mapNordeaExchange("Toronto Stock Exchange")).toEqual({ exchange_code: "TSX", suffix: ".TO" });
-    expect(mapNordeaExchange("Toronto Venture Exchange")).toEqual({ exchange_code: "TSXV", suffix: ".V" });
-    expect(buildProviderSymbol("AYA", "TSX")).toBe("AYA.TO");
-    expect(buildProviderSymbol("AUMB", "TSXV")).toBe("AUMB.V");
+  it("maps TSX/TSXV and canonical price symbols", () => {
+    expect(mapNordeaExchange("Toronto Stock Exchange")).toEqual({ exchange_code: "TSX", price_symbol: "TMP:TSX" });
+    expect(mapNordeaExchange("Toronto Venture Exchange")).toEqual({ exchange_code: "TSXV", price_symbol: "TMP:TSXV" });
+    expect(buildPriceSymbol("AYA", "TSX")).toBe("AYA:TSX");
+    expect(buildPriceSymbol("AUMB", "TSXV")).toBe("AUMB:TSXV");
   });
 
   it("computes holdings average cost from buy/sell ledger", () => {
