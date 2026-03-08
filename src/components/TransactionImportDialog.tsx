@@ -28,12 +28,35 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
   const [previewRows, setPreviewRows] = useState<ParsedImportPreviewRow[]>([]);
   const [fingerprint, setFingerprint] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [detectedFileType, setDetectedFileType] = useState<"transactions" | "holdings" | "unknown">("unknown");
+  const [failureDetails, setFailureDetails] = useState("");
 
   const validRows = useMemo(() => previewRows.filter((row) => row.errors.length === 0), [previewRows]);
+  const duplicatesIgnored = useMemo(() => previewRows.filter((row) => row.errors.some((e) => /duplicate/i.test(e))).length, [previewRows]);
+  const blockingErrors = useMemo(() => previewRows.flatMap((row) => row.errors), [previewRows]);
 
   const updatePreview = (next: ImportMapping) => {
     setMapping(next);
     setPreviewRows(buildPreviewRows(rawRows, next));
+  };
+
+  const resetFlow = () => {
+    setStep(1);
+    setHeaders([]);
+    setRawRows([]);
+    setMapping(null);
+    setPreviewRows([]);
+    setFingerprint("");
+    setBusy(false);
+    setDetectedFileType("unknown");
+    setFailureDetails("");
+  };
+
+  const classifyFile = (headersToCheck: string[]) => {
+    const lower = headersToCheck.map((header) => header.toLowerCase());
+    if (lower.some((header) => ["type", "price", "trade date", "trade_id", "fees"].some((needle) => header.includes(needle)))) return "transactions";
+    if (lower.some((header) => ["avg cost", "holding", "position"].some((needle) => header.includes(needle)))) return "holdings";
+    return "unknown";
   };
 
   const parseFile = async (file: File) => {
@@ -41,6 +64,14 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
     const buffer = await file.arrayBuffer();
     const text = new TextDecoder("utf-8").decode(buffer);
     const parsed = ext === "xlsx" ? { headers: Object.keys(parseXlsxRows(buffer)[0] || {}), rows: parseXlsxRows(buffer), sampleRows: parseXlsxRows(buffer).slice(0, 50), delimiter: "," as const, fingerprint: `xlsx-${file.name}-${file.size}` } : parseDelimitedFile(text);
+
+    if (!parsed.rows.length) {
+      toast.error("File appears to be empty.");
+      return;
+    }
+
+    const classification = classifyFile(parsed.headers);
+    setDetectedFileType(classification);
 
     setHeaders(parsed.headers);
     setRawRows(parsed.rows);
@@ -84,6 +115,7 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
   const handleImport = async () => {
     if (!mapping) return;
     setBusy(true);
+    setFailureDetails("");
 
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user?.id) {
@@ -95,10 +127,12 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
     try {
       const summary = await importTransactionsBatch(portfolioId, validRows);
       await persistMapping(mapping);
-      toast.success(`Imported ${summary.processed} rows. Skipped ${summary.skipped + (previewRows.length - validRows.length)}. Holdings updated.`);
+      toast.success(`Imported ${summary.processed} rows. Duplicates/invalid skipped: ${summary.skipped + (previewRows.length - validRows.length)}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Import failed: ${message}`);
+      const precise = message.includes("symbol") ? "Could not detect ticker column." : message.includes("quantity") ? "Could not parse quantity." : message.includes("exchange") ? "Exchange required for TSX/TSXV symbol." : message;
+      setFailureDetails(precise);
+      toast.error(`Import failed: ${precise}`);
       setBusy(false);
       return;
     }
@@ -110,17 +144,27 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
   const needsQuestions = !!mapping && (mapping.confidence < 0.85 || mapping.questions.length > 0);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) resetFlow(); onOpenChange(nextOpen); }}>
       <DialogContent className="max-w-6xl max-h-[90vh] overflow-auto">
-        <DialogHeader><DialogTitle>Import Engine (Step {step}/4)</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>Transaction import (Step {step}/4)</DialogTitle></DialogHeader>
+
+        <div className="flex gap-2 text-xs">
+          <Badge variant={step >= 1 ? "default" : "secondary"}>Upload</Badge>
+          <Badge variant={step >= 2 ? "default" : "secondary"}>Map columns</Badge>
+          <Badge variant={step >= 3 ? "default" : "secondary"}>Review issues</Badge>
+          <Badge variant={step >= 4 ? "default" : "secondary"}>Confirm</Badge>
+        </div>
 
         {step === 1 && <div className="space-y-4">
           <Input type="file" accept=".csv,.tsv,.xlsx" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseFile(file); }} />
-          <p className="text-xs text-muted-foreground">CSV/TSV required. XLSX supported.</p>
+          <p className="text-xs text-muted-foreground">Auto-detects transaction vs holdings file. You can go back and correct mapping manually.</p>
+          {detectedFileType === "transactions" && <p className="text-sm">This file looks like a <span className="font-semibold">transaction export</span>.</p>}
+          {detectedFileType === "holdings" && <p className="text-sm text-amber-600">This file looks like a holdings export. Use "Import holdings" for safer results.</p>}
+          <div className="flex gap-2"><Button variant="outline" onClick={resetFlow}>Reset import</Button><Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel import</Button></div>
         </div>}
 
         {step === 2 && mapping && <div className="space-y-3">
-          <div className="flex gap-2 text-sm"><Badge>{mapping.kind}</Badge><Badge variant="secondary">{mapping.broker_key}</Badge><Badge variant="outline">confidence {(mapping.confidence * 100).toFixed(0)}%</Badge></div>{mapping.confidence < 0.6 && !AI_MAPPING_ENABLED && <p className="text-xs text-muted-foreground">AI-assisted mapping is available but OFF by default.</p>}
+          <div className="flex gap-2 text-sm"><Badge>{mapping.kind}</Badge><Badge variant="secondary">Broker: {mapping.broker_key || "unknown"}</Badge><Badge variant="outline">confidence {(mapping.confidence * 100).toFixed(0)}%</Badge></div>{mapping.confidence < 0.6 && !AI_MAPPING_ENABLED && <p className="text-xs text-muted-foreground">AI-assisted mapping is available but OFF by default.</p>}
           <div className="grid grid-cols-2 gap-3">
             <div><p className="text-xs">Ticker column</p><Select value={mapping.columns.symbol || ""} onValueChange={(value) => updatePreview({ ...mapping, columns: { ...mapping.columns, symbol: value } })}><SelectTrigger><SelectValue placeholder="Select column" /></SelectTrigger><SelectContent>{headers.map((header) => <SelectItem key={header} value={header}>{header}</SelectItem>)}</SelectContent></Select></div>
             <div><p className="text-xs">Exchange column</p><Select value={mapping.columns.exchange || ""} onValueChange={(value) => updatePreview({ ...mapping, columns: { ...mapping.columns, exchange: value } })}><SelectTrigger><SelectValue placeholder="Select column" /></SelectTrigger><SelectContent>{headers.map((header) => <SelectItem key={header} value={header}>{header}</SelectItem>)}</SelectContent></Select></div>
@@ -131,10 +175,15 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
 
         {step === 3 && mapping && <div className="space-y-3">
           {needsQuestions && <div className="rounded border p-3 text-sm">{mapping.questions.slice(0, 4).map((question) => <p key={question}>• {question}</p>)}</div>}
-          <div className="flex gap-2 text-xs"><Badge>{previewRows.length} rows</Badge><Badge variant="outline">{validRows.length} valid</Badge></div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Badge>{previewRows.length} rows detected</Badge>
+            <Badge variant="outline">{validRows.length} valid rows</Badge>
+            <Badge variant="secondary">{duplicatesIgnored} duplicates ignored</Badge>
+            <Badge variant={blockingErrors.length ? "destructive" : "outline"}>{blockingErrors.length} blocking errors</Badge>
+          </div>
           <Table>
             <TableHeader><TableRow><TableHead>Status</TableHead><TableHead>Date</TableHead><TableHead>Symbol</TableHead><TableHead>Exchange</TableHead><TableHead>Qty</TableHead><TableHead>Errors</TableHead></TableRow></TableHeader>
-            <TableBody>{previewRows.slice(0, 120).map((row, idx) => <TableRow key={idx}><TableCell>{row.errors.length === 0 ? <Badge>OK</Badge> : <Badge variant="destructive">Issue</Badge>}</TableCell><TableCell>{row.tx.traded_at || "-"}</TableCell><TableCell>{row.tx.symbol_raw || "-"}</TableCell><TableCell>{row.tx.exchange_code || "-"}</TableCell><TableCell>{row.tx.quantity || "-"}</TableCell><TableCell className="text-xs">{row.errors.join(", ") || "-"}</TableCell></TableRow>)}</TableBody>
+            <TableBody>{previewRows.slice(0, 120).map((row, idx) => <TableRow key={idx}><TableCell>{row.errors.length === 0 ? <Badge>OK</Badge> : <Badge variant="destructive">Action required</Badge>}</TableCell><TableCell>{row.tx.traded_at || "-"}</TableCell><TableCell>{row.tx.symbol_raw || "-"}</TableCell><TableCell>{row.tx.exchange_code || "-"}</TableCell><TableCell>{row.tx.quantity || "-"}</TableCell><TableCell className="text-xs">{row.errors.join(", ") || "-"}</TableCell></TableRow>)}</TableBody>
           </Table>
           <div className="flex justify-between">
             <Button variant="outline" onClick={() => setStep(2)}>Fix mapping</Button>
@@ -144,8 +193,17 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
 
         {step === 4 && mapping && <div className="space-y-3">
           <p className="text-sm">Ready to import {validRows.length} transaction rows.</p>
-          <div className="text-xs text-muted-foreground">Method: Average Cost.</div>
-          <Button onClick={handleImport} disabled={busy || validRows.length === 0}>{busy ? "Importing..." : "Confirm import"}</Button>
+          <div className="rounded border p-3 text-xs space-y-1">
+            <p><strong>Summary:</strong> {previewRows.length} rows detected, {validRows.length} valid, {duplicatesIgnored} duplicates ignored, {blockingErrors.length} warnings/errors.</p>
+            {failureDetails && <p className="text-destructive">Last failure: {failureDetails}</p>}
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={handleImport} disabled={busy || validRows.length === 0}>{busy ? "Importing..." : "Confirm import"}</Button>
+            <Button variant="outline" onClick={resetFlow}>Reset import</Button>
+            <Button variant="ghost" onClick={() => setStep(3)}>Back</Button>
+            {failureDetails && <Button variant="secondary" onClick={handleImport} disabled={busy}>Retry failed import</Button>}
+          </div>
+          {failureDetails && <div className="space-y-1"><p className="text-xs">Error details</p><Input value={failureDetails} readOnly /></div>}
         </div>}
       </DialogContent>
     </Dialog>

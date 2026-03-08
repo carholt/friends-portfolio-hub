@@ -14,6 +14,17 @@ import { PageSkeleton } from "@/components/feedback/PageSkeleton";
 import { ErrorState } from "@/components/feedback/ErrorState";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { formatCurrency } from "@/lib/format";
+import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const PAGE_SIZE = 25;
 
@@ -23,6 +34,7 @@ export default function PortfoliosPage() {
   const [showTxImportFor, setShowTxImportFor] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [deletingPortfolioId, setDeletingPortfolioId] = useState<string | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["portfolios", visibleCount],
@@ -38,6 +50,18 @@ export default function PortfoliosPage() {
   useEffect(() => { if (searchParams.get("import") === "1" && data?.[0]) setShowImportFor(data[0].id); if (searchParams.get("tximport") === "1" && data?.[0]) setShowTxImportFor(data[0].id); }, [searchParams, data]);
 
   const canLoadMore = useMemo(() => (data?.length || 0) >= visibleCount, [data, visibleCount]);
+
+  const handleDeletePortfolio = async () => {
+    if (!deletingPortfolioId) return;
+    const { error: deleteError } = await supabase.from("portfolios").delete().eq("id", deletingPortfolioId);
+    if (deleteError) {
+      toast.error(`Could not delete portfolio: ${deleteError.message}`);
+      return;
+    }
+    toast.success("Portfolio deleted. Holdings, transactions, cached valuations, and compare visibility were removed.");
+    setDeletingPortfolioId(null);
+    await refetch();
+  };
 
   return (
     <AppLayout>
@@ -56,7 +80,7 @@ export default function PortfoliosPage() {
         <>
           <div className="grid gap-4 md:grid-cols-2">
             {data!.map((p) => (
-              <Card key={p.id}><CardHeader><CardTitle>{p.name}</CardTitle><Badge variant="secondary">{p.visibility}</Badge></CardHeader><CardContent className="space-y-3"><p className="text-sm">Total value: <span className="font-semibold">{p.latestValue == null ? "Estimated pending" : formatCurrency(p.latestValue, p.base_currency)}</span></p><Link to={`/portfolio/${p.id}`}><Button className="w-full">Open</Button></Link></CardContent></Card>
+              <Card key={p.id}><CardHeader><CardTitle>{p.name}</CardTitle><Badge variant="secondary">{p.visibility}</Badge></CardHeader><CardContent className="space-y-3"><p className="text-sm">Total value: <span className="font-semibold">{p.latestValue == null ? "Estimated pending" : formatCurrency(p.latestValue, p.base_currency)}</span></p><div className="flex gap-2"><Link className="flex-1" to={`/portfolio/${p.id}`}><Button className="w-full">Open</Button></Link><Button variant="destructive" onClick={() => setDeletingPortfolioId(p.id)}>Delete</Button></div></CardContent></Card>
             ))}
           </div>
           {canLoadMore && <Button variant="ghost" className="mt-4" onClick={() => setVisibleCount((s) => s + PAGE_SIZE)}>Load more</Button>}
@@ -65,6 +89,20 @@ export default function PortfoliosPage() {
       <CreatePortfolioDialog open={showCreate} onOpenChange={setShowCreate} onCreated={refetch} />
       {showImportFor && <ImportDialog open={!!showImportFor} onOpenChange={() => setShowImportFor(null)} portfolioId={showImportFor} onImported={refetch} />}
       {showTxImportFor && <TransactionImportDialog open={!!showTxImportFor} onOpenChange={() => setShowTxImportFor(null)} portfolioId={showTxImportFor} onImported={refetch} />}
+      <AlertDialog open={!!deletingPortfolioId} onOpenChange={(open) => !open && setDeletingPortfolioId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this portfolio?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes holdings, transactions, cached valuations, and comparison visibility tied to this portfolio.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={handleDeletePortfolio}>Delete permanently</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppLayout>
   );
 }

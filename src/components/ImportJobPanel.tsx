@@ -2,11 +2,14 @@ import { AlertTriangle, CheckCircle2, Clock3, Loader2, XCircle } from "lucide-re
 import { useImportJob } from "@/hooks/useImportJob";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 const statusLabel: Record<string, string> = {
   queued: "Queued",
-  running: "Running",
-  completed: "Completed",
+  running: "In progress",
+  completed: "Success",
   failed: "Failed",
   canceled: "Canceled",
 };
@@ -20,7 +23,7 @@ function StatusIcon({ status }: { status?: string }) {
 }
 
 export function ImportJobPanel({ jobId }: { jobId: string | null | undefined }) {
-  const { job, loading, error } = useImportJob(jobId, { enabled: !!jobId, pollMs: 2500 });
+  const { job, loading, error, refetch } = useImportJob(jobId, { enabled: !!jobId, pollMs: 2500 });
 
   if (!jobId) return null;
 
@@ -29,6 +32,22 @@ export function ImportJobPanel({ jobId }: { jobId: string | null | undefined }) 
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
   const inserted = Number(job?.progress?.inserted || 0);
   const skipped = Number(job?.progress?.skipped || 0);
+
+  const cancelJob = async () => {
+    if (!job) return;
+    const { error: updateError } = await supabase.from("import_jobs").update({ status: "canceled" }).eq("id", job.id);
+    if (updateError) return toast.error(`Could not cancel job: ${updateError.message}`);
+    toast.success("Import job canceled.");
+    refetch();
+  };
+
+  const retryJob = async () => {
+    if (!job) return;
+    const { error: updateError } = await supabase.from("import_jobs").update({ status: "queued", error: null, retry_count: 0 }).eq("id", job.id);
+    if (updateError) return toast.error(`Could not retry job: ${updateError.message}`);
+    toast.success("Import job re-queued.");
+    refetch();
+  };
 
   return (
     <Card>
@@ -50,6 +69,10 @@ export function ImportJobPanel({ jobId }: { jobId: string | null | undefined }) 
               <span>Total: {total || "—"}</span>
               <span>Inserted: {inserted}</span>
               <span>Skipped: {skipped}</span>
+            </div>
+            <div className="flex gap-2">
+              {(job.status === "queued" || job.status === "running") && <Button size="sm" variant="outline" onClick={cancelJob}>Cancel import</Button>}
+              {(job.status === "failed" || job.status === "canceled") && <Button size="sm" variant="secondary" onClick={retryJob}>Retry</Button>}
             </div>
             {job.error && (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs">

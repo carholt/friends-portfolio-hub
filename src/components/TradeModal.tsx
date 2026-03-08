@@ -5,6 +5,8 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { rebuildHoldingsAndRefreshValuation } from "@/lib/portfolio-refresh";
 
 export type TradeType = "buy" | "sell" | "adjust" | "remove";
 
@@ -17,32 +19,32 @@ interface Props {
 }
 
 export default function TradeModal({ open, onOpenChange, portfolioId, type, onDone }: Props) {
+  const [txType, setTxType] = useState<TradeType>(type);
   const [symbol, setSymbol] = useState("");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [currency, setCurrency] = useState("USD");
-  const [note, setNote] = useState("");
+  const [exchange, setExchange] = useState("");
+  const [broker, setBroker] = useState("manual");
+  const [fees, setFees] = useState("0");
+  const [tradeId, setTradeId] = useState("");
+  const [tradedAt, setTradedAt] = useState(new Date().toISOString().slice(0, 16));
   const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const submit = async () => {
     setSaving(true);
     const clean = symbol.toUpperCase().trim();
-    if (!clean) {
-      toast.error("Asset symbol is required.");
-      setSaving(false);
-      return;
-    }
+    const nextErrors: Record<string, string> = {};
 
-    const qty = Number(quantity || 0);
-    if (type !== "remove" && (!Number.isFinite(qty) || qty <= 0)) {
-      toast.error("Quantity must be greater than zero.");
-      setSaving(false);
-      return;
-    }
+    if (!clean) nextErrors.symbol = "Symbol is required.";
+    if (!quantity || Number(quantity) <= 0) nextErrors.quantity = "Quantity must be greater than zero.";
+    if ((txType === "buy" || txType === "sell") && (!price || Number(price) <= 0)) nextErrors.price = "Price is required for buy/sell.";
+    if (!currency.trim()) nextErrors.currency = "Currency is required.";
+    if (!tradedAt) nextErrors.tradedAt = "Trade date is required.";
 
-    const px = price ? Number(price) : null;
-    if ((type === "buy" || type === "sell") && (!px || px <= 0)) {
-      toast.error("Price is required for buy/sell.");
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
       setSaving(false);
       return;
     }
@@ -70,12 +72,15 @@ export default function TradeModal({ open, onOpenChange, portfolioId, type, onDo
       portfolio_id: portfolioId,
       user_id: auth.user.id,
       asset_id: assetId,
-      type,
-      quantity: type === "sell" ? -Math.abs(qty) : qty,
-      price: px,
-      currency,
-      note: note || null,
-      traded_at: new Date().toISOString(),
+      type: txType,
+      quantity: Number(quantity),
+      price: price ? Number(price) : null,
+      currency: currency.toUpperCase(),
+      exchange: exchange || null,
+      broker: broker || null,
+      trade_id: tradeId || null,
+      fees: fees ? Number(fees) : null,
+      traded_at: new Date(tradedAt).toISOString(),
     });
 
     setSaving(false);
@@ -84,11 +89,12 @@ export default function TradeModal({ open, onOpenChange, portfolioId, type, onDo
       return;
     }
 
-    toast.success(`${type} transaction recorded.`);
+    await rebuildHoldingsAndRefreshValuation(portfolioId);
+    toast.success("Transaction recorded and portfolio valuation refreshed.");
     setSymbol("");
     setQuantity("");
     setPrice("");
-    setNote("");
+    setTradeId("");
     onOpenChange(false);
     onDone();
   };
@@ -96,13 +102,24 @@ export default function TradeModal({ open, onOpenChange, portfolioId, type, onDo
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{type.toUpperCase()} trade</DialogTitle></DialogHeader>
-        <div className="space-y-3">
-          <div><Label>Asset symbol</Label><Input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" /></div>
-          {type !== "remove" && <div><Label>Quantity</Label><Input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} /></div>}
-          {(type === "buy" || type === "sell") && <div><Label>Price</Label><Input type="number" value={price} onChange={(e) => setPrice(e.target.value)} /></div>}
-          <div><Label>Currency</Label><Input value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} /></div>
-          <div><Label>Note</Label><Input value={note} onChange={(e) => setNote(e.target.value)} /></div>
+        <DialogHeader><DialogTitle>Add transaction</DialogTitle></DialogHeader>
+        <div className="space-y-2">
+          <div><Label>Type</Label><Select value={txType} onValueChange={(value) => setTxType(value as TradeType)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="buy">Buy</SelectItem><SelectItem value="sell">Sell</SelectItem><SelectItem value="adjust">Adjust</SelectItem><SelectItem value="remove">Remove</SelectItem></SelectContent></Select></div>
+          <div><Label>Asset symbol</Label><Input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" />{errors.symbol && <p className="text-xs text-destructive">{errors.symbol}</p>}</div>
+          <div><Label>Quantity</Label><Input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} />{errors.quantity && <p className="text-xs text-destructive">{errors.quantity}</p>}</div>
+          <div><Label>Price</Label><Input type="number" value={price} onChange={(e) => setPrice(e.target.value)} />{errors.price && <p className="text-xs text-destructive">{errors.price}</p>}</div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><Label>Currency</Label><Input value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} />{errors.currency && <p className="text-xs text-destructive">{errors.currency}</p>}</div>
+            <div><Label>Exchange (optional)</Label><Input value={exchange} onChange={(e) => setExchange(e.target.value.toUpperCase())} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><Label>Fees</Label><Input type="number" value={fees} onChange={(e) => setFees(e.target.value)} /></div>
+            <div><Label>Broker</Label><Input value={broker} onChange={(e) => setBroker(e.target.value)} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><Label>Trade ID (optional)</Label><Input value={tradeId} onChange={(e) => setTradeId(e.target.value)} /></div>
+            <div><Label>Trade date</Label><Input type="datetime-local" value={tradedAt} onChange={(e) => setTradedAt(e.target.value)} />{errors.tradedAt && <p className="text-xs text-destructive">{errors.tradedAt}</p>}</div>
+          </div>
           <Button onClick={submit} disabled={saving}>{saving ? "Saving..." : "Confirm"}</Button>
         </div>
       </DialogContent>
