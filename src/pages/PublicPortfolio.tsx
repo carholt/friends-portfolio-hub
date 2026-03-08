@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TrendingUp, Globe } from "lucide-react";
 import { convertCurrency } from "@/lib/portfolio-utils";
+import type { Tables } from "@/integrations/supabase/types";
 
 interface Holding {
   id: string;
@@ -16,9 +17,14 @@ interface Holding {
   latest_price?: number | null;
 }
 
+type PublicPortfolioRow = Tables<"portfolios">;
+type HoldingRow = Tables<"holdings">;
+type AssetRow = Tables<"assets">;
+type PriceRow = Tables<"prices">;
+
 export default function PublicPortfolio() {
   const { slug } = useParams<{ slug: string }>();
-  const [portfolio, setPortfolio] = useState<any>(null);
+  const [portfolio, setPortfolio] = useState<PublicPortfolioRow | null>(null);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [ownerName, setOwnerName] = useState("–");
   const [loading, setLoading] = useState(true);
@@ -49,8 +55,9 @@ export default function PublicPortfolio() {
         .eq("portfolio_id", p.id);
 
       if (h) {
-        const assetIds = h.map((hh: any) => hh.asset?.id).filter(Boolean);
-        let priceMap: Record<string, number> = {};
+        const typedHoldings = h as Array<HoldingRow & { asset: AssetRow | null }>;
+        const assetIds = typedHoldings.map((hh) => hh.asset?.id).filter((id): id is string => Boolean(id));
+        const priceMap: Record<string, number> = {};
         if (assetIds.length > 0) {
           const { data: prices } = await supabase
             .from("prices")
@@ -58,12 +65,12 @@ export default function PublicPortfolio() {
             .in("asset_id", assetIds)
             .order("as_of_date", { ascending: false });
           if (prices) {
-            for (const pr of prices) {
+            for (const pr of prices as Array<Pick<PriceRow, "asset_id" | "price">>) {
               if (!priceMap[pr.asset_id]) priceMap[pr.asset_id] = Number(pr.price);
             }
           }
         }
-        setHoldings(h.map((hh: any) => ({
+        setHoldings(typedHoldings.map((hh) => ({
           ...hh,
           latest_price: hh.asset ? priceMap[hh.asset.id] ?? null : null,
         })));
@@ -90,6 +97,8 @@ export default function PublicPortfolio() {
       </Card>
     </div>
   );
+
+  if (!portfolio) return null;
 
   const totalValue = holdings.reduce((sum, h) => {
     if (h.latest_price == null || !h.asset) return sum;

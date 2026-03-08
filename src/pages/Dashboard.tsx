@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Plus, Briefcase, TrendingUp, TrendingDown } from "lucide-react";
 import CreatePortfolioDialog from "@/components/CreatePortfolioDialog";
+import type { BadgeProps } from "@/components/ui/badge";
 
 interface Portfolio {
   id: string;
@@ -24,8 +25,14 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
 
-  const fetchPortfolios = async () => {
-    if (!user) return;
+  const fetchPortfolios = useCallback(async () => {
+    if (!user) {
+      setPortfolios([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     const { data } = await supabase
       .from("portfolios")
       .select("*")
@@ -33,11 +40,18 @@ export default function Dashboard() {
       .order("created_at", { ascending: false });
     setPortfolios(data || []);
     setLoading(false);
-  };
+  }, [user]);
 
   useEffect(() => {
     fetchPortfolios();
-  }, [user]);
+  }, [fetchPortfolios]);
+
+  const visibilityVariant = (visibility: string): BadgeProps["variant"] => {
+    if (visibility === "private" || visibility === "authenticated" || visibility === "group" || visibility === "public") {
+      return visibility;
+    }
+    return "secondary";
+  };
 
   const visibilityLabel = (v: string) => {
     const map: Record<string, string> = {
@@ -88,7 +102,7 @@ export default function Dashboard() {
               <Card className="hover:border-primary/50 transition-colors cursor-pointer h-full">
                 <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
                   <CardTitle className="text-lg">{p.name}</CardTitle>
-                  <Badge variant={p.visibility as any}>{visibilityLabel(p.visibility)}</Badge>
+                  <Badge variant={visibilityVariant(p.visibility)}>{visibilityLabel(p.visibility)}</Badge>
                 </CardHeader>
                 <CardContent>
                   {p.description && <p className="text-sm text-muted-foreground mb-2">{p.description}</p>}

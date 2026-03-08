@@ -18,4 +18,15 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          charts: ["recharts"],
+          xlsx: ["xlsx"],
+          supabase: ["@supabase/supabase-js"],
+        },
+      },
+    },
+  },
 }));
