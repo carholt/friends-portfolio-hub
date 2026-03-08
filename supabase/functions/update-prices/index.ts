@@ -1,23 +1,19 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-type Asset = {
+type MarketInstrument = {
   id: string;
-  symbol: string;
-  exchange_code: string | null;
-  price_symbol: string | null;
-};
-
-type SymbolAlias = {
-  raw_symbol: string;
-  exchange: string;
   canonical_symbol: string;
+  exchange_code: string | null;
   price_symbol: string;
+  provider: string;
+  last_price_at: string | null;
 };
 
-type LatestPriceStamp = {
-  asset_id: string;
-  created_at: string;
+type SymbolCandidate = {
+  price_symbol: string;
+  rank_priority: number;
+  rank_score: number;
 };
 
 const corsHeaders = {
@@ -48,94 +44,94 @@ Deno.serve(async (req) => {
   );
 
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const nowMs = Date.now();
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const nowMs = now.getTime();
 
-    const { data: assets, error: assetsError } = await supabase
-      .from("assets")
-      .select("id,symbol,exchange_code,price_symbol")
+    const { data: instruments, error: instrumentsError } = await supabase
+      .from("market_instruments")
+      .select("id,canonical_symbol,exchange_code,price_symbol,provider,last_price_at")
+      .eq("status", "active")
       .not("price_symbol", "is", null);
 
-    if (assetsError) throw assetsError;
+    if (instrumentsError) throw instrumentsError;
 
-    const assetIds = (assets ?? []).map((asset) => asset.id);
+    const staleInstruments = ((instruments ?? []) as MarketInstrument[]).filter((instrument) => {
+      if (!instrument.last_price_at) return true;
+      return (nowMs - new Date(instrument.last_price_at).getTime()) > STALE_AFTER_MS;
+    });
+
     const summary = {
-      assets_considered: assetIds.length,
-      assets_stale: 0,
-      prices_upserted: 0,
+      instruments_considered: (instruments ?? []).length,
+      instruments_stale: staleInstruments.length,
+      market_prices_inserted: 0,
+      legacy_prices_upserted: 0,
       api_errors: 0,
       skipped_missing_price: 0,
     };
 
-    const { data: aliases, error: aliasesError } = await supabase
-      .from("symbol_aliases")
-      .select("raw_symbol,exchange,canonical_symbol,price_symbol");
-
-    if (aliasesError) throw aliasesError;
-
-    const aliasMap = new Map<string, SymbolAlias>();
-    for (const row of (aliases ?? []) as SymbolAlias[]) {
-      aliasMap.set(`${row.raw_symbol.toUpperCase()}::${row.exchange.toUpperCase()}`, row);
-    }
-
-
-    if (assetIds.length === 0) {
-      return new Response(JSON.stringify({ message: "No assets require updates", summary }), {
+    if (staleInstruments.length === 0) {
+      return new Response(JSON.stringify({ message: "No market instruments require updates", summary }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const { data: priceStamps, error: stampError } = await supabase
-      .from("prices")
-      .select("asset_id,created_at")
-      .in("asset_id", assetIds)
-      .order("created_at", { ascending: false });
+    const symbolToInstruments = new Map<string, MarketInstrument[]>();
 
-    if (stampError) throw stampError;
+    for (const instrument of staleInstruments) {
+      let resolvedSymbol = instrument.price_symbol;
+      const { data: candidates, error: candidateError } = await supabase.rpc("resolve_symbol_candidates", {
+        _raw_symbol: instrument.canonical_symbol,
+        _exchange: instrument.exchange_code,
+      });
 
-    const latestByAsset = new Map<string, string>();
-    for (const row of (priceStamps ?? []) as LatestPriceStamp[]) {
-      if (!latestByAsset.has(row.asset_id)) latestByAsset.set(row.asset_id, row.created_at);
+      if (!candidateError && Array.isArray(candidates) && candidates.length > 0) {
+        const best = [...(candidates as SymbolCandidate[])].sort((a, b) => {
+          if (a.rank_priority !== b.rank_priority) return a.rank_priority - b.rank_priority;
+          return b.rank_score - a.rank_score;
+        })[0];
+        if (best?.price_symbol) resolvedSymbol = best.price_symbol;
+      }
+
+      const arr = symbolToInstruments.get(resolvedSymbol) ?? [];
+      arr.push(instrument);
+      symbolToInstruments.set(resolvedSymbol, arr);
     }
 
-    const staleAssets = (assets as Asset[]).filter((asset) => {
-      const latest = latestByAsset.get(asset.id);
-      if (!latest) return true;
-      return (nowMs - new Date(latest).getTime()) > STALE_AFTER_MS;
-    });
-
-    summary.assets_stale = staleAssets.length;
-
-    const rowsToUpsert: Array<{
-      asset_id: string;
+    const marketPriceRows: Array<{
+      instrument_id: string;
       price: number;
       currency: string;
-      price_date: string;
-      as_of_date: string;
+      price_timestamp: string;
       source: string;
+      raw_payload: Record<string, unknown>;
     }> = [];
 
-    for (let i = 0; i < staleAssets.length; i += 1) {
-      const asset = staleAssets[i];
-      const alias = aliasMap.get(`${asset.symbol.toUpperCase()}::${(asset.exchange_code || "").toUpperCase()}`);
-      const symbol = alias?.price_symbol || asset.price_symbol || `${asset.symbol}${asset.exchange_code ? `:${asset.exchange_code}` : ""}`;
+    const updatedInstrumentIds = new Set<string>();
 
+    const symbols = [...symbolToInstruments.keys()];
+
+    for (let i = 0; i < symbols.length; i += 1) {
+      const symbol = symbols[i];
       try {
         const response = await fetch(
           `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`,
         );
-        const payload = await response.json() as { price?: string; currency?: string };
+        const payload = await response.json() as { price?: string; currency?: string; status?: string };
         const parsedPrice = Number(payload.price);
 
         if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
-          rowsToUpsert.push({
-            asset_id: asset.id,
-            price: parsedPrice,
-            currency: (payload.currency || "USD").toUpperCase(),
-            price_date: today,
-            as_of_date: today,
-            source: "twelve_data",
-          });
+          for (const instrument of symbolToInstruments.get(symbol) ?? []) {
+            marketPriceRows.push({
+              instrument_id: instrument.id,
+              price: parsedPrice,
+              currency: (payload.currency || "USD").toUpperCase(),
+              price_timestamp: nowIso,
+              source: instrument.provider || "twelve_data",
+              raw_payload: payload as unknown as Record<string, unknown>,
+            });
+            updatedInstrumentIds.add(instrument.id);
+          }
         } else {
           summary.skipped_missing_price += 1;
         }
@@ -143,16 +139,58 @@ Deno.serve(async (req) => {
         summary.api_errors += 1;
       }
 
-      if (i < staleAssets.length - 1) await sleep(API_DELAY_MS);
+      if (i < symbols.length - 1) await sleep(API_DELAY_MS);
     }
 
-    if (rowsToUpsert.length > 0) {
-      const { error: upsertError } = await supabase
-        .from("prices")
-        .upsert(rowsToUpsert, { onConflict: "asset_id,price_date" });
+    if (marketPriceRows.length > 0) {
+      const { error: marketPriceError } = await supabase
+        .from("market_prices")
+        .insert(marketPriceRows);
 
-      if (upsertError) throw upsertError;
-      summary.prices_upserted = rowsToUpsert.length;
+      if (marketPriceError) throw marketPriceError;
+      summary.market_prices_inserted = marketPriceRows.length;
+
+      const { error: instrumentUpdateError } = await supabase
+        .from("market_instruments")
+        .update({ last_price_at: nowIso, updated_at: nowIso })
+        .in("id", [...updatedInstrumentIds]);
+
+      if (instrumentUpdateError) throw instrumentUpdateError;
+
+      const { data: linkedAssets, error: linkedAssetsError } = await supabase
+        .from("assets")
+        .select("id,instrument_id")
+        .in("instrument_id", [...updatedInstrumentIds]);
+
+      if (linkedAssetsError) throw linkedAssetsError;
+
+      const latestPriceByInstrument = new Map<string, (typeof marketPriceRows)[number]>();
+      for (const row of marketPriceRows) {
+        latestPriceByInstrument.set(row.instrument_id, row);
+      }
+
+      const legacyRows = (linkedAssets ?? []).flatMap((asset: { id: string; instrument_id: string | null }) => {
+        if (!asset.instrument_id) return [];
+        const latest = latestPriceByInstrument.get(asset.instrument_id);
+        if (!latest) return [];
+        const date = latest.price_timestamp.slice(0, 10);
+        return [{
+          asset_id: asset.id,
+          price: latest.price,
+          currency: latest.currency,
+          as_of_date: date,
+          price_date: date,
+          source: latest.source,
+        }];
+      });
+
+      if (legacyRows.length > 0) {
+        const { error: legacyError } = await supabase
+          .from("prices")
+          .upsert(legacyRows, { onConflict: "asset_id,price_date" });
+        if (legacyError) throw legacyError;
+        summary.legacy_prices_upserted = legacyRows.length;
+      }
     }
 
     const { error: refreshError } = await supabase.rpc("refresh_portfolio_valuations");

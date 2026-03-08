@@ -2,21 +2,21 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-describe("refresh_portfolio_valuations SQL", () => {
+describe("global price valuation SQL", () => {
   const sql = readFileSync(
-    resolve(process.cwd(), "supabase/migrations/20260312120000_price_worker_valuation_cache_leaderboard.sql"),
+    resolve(process.cwd(), "supabase/migrations/20260314090000_global_price_cache_and_symbol_overrides.sql"),
     "utf8",
   );
 
-  it("computes values and costs from holdings with latest prices", () => {
-    expect(sql).toContain("JOIN latest_prices lp");
-    expect(sql).toContain("(h.quantity * lp.price) AS position_value");
-    expect(sql).toContain("(h.quantity * h.avg_cost) AS position_cost");
+  it("exposes asset_latest_prices view backed by market_prices", () => {
+    expect(sql).toContain("CREATE OR REPLACE VIEW public.asset_latest_prices AS");
+    expect(sql).toContain("FROM public.market_prices mp");
+    expect(sql).toContain("ORDER BY mp.price_timestamp DESC");
   });
 
-  it("aggregates by portfolio and upserts totals", () => {
-    expect(sql).toContain("GROUP BY portfolio_id");
+  it("refreshes valuations from asset_latest_prices", () => {
+    expect(sql).toContain("FROM public.asset_latest_prices alp");
+    expect(sql).toContain("JOIN latest_prices lp");
     expect(sql).toContain("ON CONFLICT (portfolio_id, valuation_date)");
-    expect(sql).toContain("total_return = EXCLUDED.total_return");
   });
 });

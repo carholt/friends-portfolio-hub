@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import { AlertTriangle } from "lucide-react";
 import { buildPreviewRows, parseXlsxRows, type ParsedImportPreviewRow } from "@/lib/transaction-import";
 import { detectMapping, parseDelimitedFile, type ImportMapping } from "@/lib/import-engine";
 import { importTransactionsBatch } from "@/lib/transactions-batch-import";
@@ -130,6 +131,12 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
         </div>}
 
         {step === 3 && mapping && <div className="space-y-3">
+          {mapping.confidence < 0.85 && (
+            <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4" />Low-confidence symbol mapping detected ({(mapping.confidence * 100).toFixed(0)}%).</div>
+              <Button size="sm" variant="outline" onClick={() => window.location.assign('/settings/symbol-resolution')}>Fix mapping</Button>
+            </div>
+          )}
           {needsQuestions && <div className="rounded border p-3 text-sm">{mapping.questions.slice(0, 4).map((question) => <p key={question}>• {question}</p>)}</div>}
           <div className="flex gap-2 text-xs"><Badge>{previewRows.length} rows</Badge><Badge variant="outline">{validRows.length} valid</Badge></div>
           <Table>

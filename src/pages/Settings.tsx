@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { env } from "@/config/env";
+import { Link } from "react-router-dom";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -72,6 +73,17 @@ export default function SettingsPage() {
           </div>
           <Button variant="hero" onClick={save} disabled={loading} className="w-full">
             {loading ? "Sparar…" : "Spara"}
+          </Button>
+        </CardContent>
+      </Card>
+
+
+
+      <Card className="max-w-lg mt-6">
+        <CardHeader><CardTitle>Symbol resolution admin</CardTitle></CardHeader>
+        <CardContent>
+          <Button asChild variant="outline" className="w-full">
+            <Link to="/settings/symbol-resolution">Open symbol resolution tool</Link>
           </Button>
         </CardContent>
       </Card>

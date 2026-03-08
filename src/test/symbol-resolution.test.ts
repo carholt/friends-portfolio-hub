@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyImportResolution, isExchangeAsSymbol, pickBestCandidate } from "@/lib/symbol-resolution";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 describe("symbol resolution helpers", () => {
   it("detects exchange-as-symbol values", () => {
@@ -27,5 +29,15 @@ describe("symbol resolution helpers", () => {
     expect(applyImportResolution("GRSL", [
       { price_symbol: "GRSL:TSX", exchange_code: "TSX", name: "Green", currency: "CAD", score: 93, provider: "twelve_data" },
     ]).status).toBe("resolved");
+  });
+});
+
+describe("symbol resolution SQL pipeline", () => {
+  const sql = readFileSync(resolve(process.cwd(), "supabase/migrations/20260314090000_global_price_cache_and_symbol_overrides.sql"), "utf8");
+
+  it("prioritizes manual override before broker/isin/raw symbol matching", () => {
+    expect(sql).toContain("WHEN sa.resolution_source = 'manual_override' THEN 1");
+    expect(sql).toContain("WHEN sa.broker IS NOT NULL AND sa.broker = (SELECT broker FROM normalized) THEN 2");
+    expect(sql).toContain("WHEN sa.isin IS NOT NULL AND sa.isin = (SELECT isin FROM normalized) THEN 3");
   });
 });
