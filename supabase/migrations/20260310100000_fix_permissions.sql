@@ -1,6 +1,18 @@
 -- Complete Supabase RLS + grants audit for all frontend-accessed tables.
 -- Scope: every table queried directly by the frontend via Supabase `.from(...)`.
 
+-- Bootstrap missing import profile table for environments that skipped prior import migrations.
+CREATE TABLE IF NOT EXISTS public.broker_import_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  broker_key TEXT NOT NULL DEFAULT 'unknown',
+  file_fingerprint TEXT NOT NULL,
+  mapping JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(owner_user_id, file_fingerprint)
+);
+
 -- 1) Ensure RLS is enabled on all frontend-accessed tables.
 ALTER TABLE IF EXISTS public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.portfolios ENABLE ROW LEVEL SECURITY;
