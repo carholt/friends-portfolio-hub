@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { resolveImportSymbol } from "./resolve-import-symbol.ts";
 
 type ImportJob = {
   id: string;
@@ -175,7 +176,26 @@ async function processJob(adminClient: ReturnType<typeof createClient>, job: Imp
     }
 
     const chunkRows = rows.slice(cursor, cursor + chunkSize);
-    const mapped = chunkRows.map((row) => mapRowToTransaction(row as Record<string, string>, job.mapping || {}));
+    const mapped = await Promise.all(
+      chunkRows.map(async (row) => {
+        const transaction = mapRowToTransaction(row as Record<string, string>, job.mapping || {});
+        const instrumentId = await resolveImportSymbol(adminClient, {
+          symbol: transaction.symbol_raw,
+          broker: transaction.broker,
+          exchange: transaction.exchange_raw,
+          isin: transaction.isin,
+          name: clean((row as Record<string, string>).name || (row as Record<string, string>).instrument || ""),
+        });
+
+        return {
+          ...transaction,
+          raw_row: {
+            ...(transaction.raw_row as Record<string, unknown>),
+            resolved_instrument_id: instrumentId,
+          },
+        };
+      }),
+    );
 
     const { data: rpcResult, error: rpcError } = await adminClient.rpc("import_apply_transaction_batch", {
       _job_id: job.id,

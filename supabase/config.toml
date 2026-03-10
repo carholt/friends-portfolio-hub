@@ -2,3 +2,6 @@ project_id = "arcaeqrsobkwpvodibzj"
 
 [functions.update-prices]
 verify_jwt = false
+
+[functions.update-market-prices]
+verify_jwt = false
