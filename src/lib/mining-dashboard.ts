@@ -117,10 +117,29 @@ function mapSignals(data: unknown): ValuationSignal[] {
   });
 }
 
-export async function fetchMiningDashboard(portfolioId: string): Promise<MiningDashboardData> {
-  const { data, error } = await supabase.rpc("get_portfolio_mining_dashboard" as never, {
-    portfolio_id: portfolioId,
+
+type RpcErrorLike = { code?: string; message?: string } | null | undefined;
+
+function shouldRetryWithLegacyArgument(error: RpcErrorLike) {
+  if (!error || error.code !== "PGRST202") return false;
+  const message = String(error.message ?? "").toLowerCase();
+  return message.includes("get_portfolio_mining_dashboard") && message.includes("portfolio_id");
+}
+
+async function requestMiningDashboard(portfolioId: string, useLegacyArgument = false) {
+  return supabase.rpc("get_portfolio_mining_dashboard" as never, {
+    [useLegacyArgument ? "portfolio_id" : "_portfolio_id"]: portfolioId,
   } as never);
+}
+
+export async function fetchMiningDashboard(portfolioId: string): Promise<MiningDashboardData> {
+  let { data, error } = await requestMiningDashboard(portfolioId);
+
+  if (shouldRetryWithLegacyArgument(error)) {
+    const fallback = await requestMiningDashboard(portfolioId, true);
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) throw error;
 
