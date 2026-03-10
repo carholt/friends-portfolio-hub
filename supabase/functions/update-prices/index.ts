@@ -1,19 +1,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-type MarketInstrument = {
+type AssetRow = {
   id: string;
-  canonical_symbol: string;
-  exchange_code: string | null;
-  price_symbol: string;
-  provider: string;
-  last_price_at: string | null;
-};
-
-type SymbolCandidate = {
-  price_symbol: string;
-  rank_priority: number;
-  rank_score: number;
+  symbol: string;
+  price_symbol: string | null;
+  price_provider: string | null;
+  currency: string | null;
 };
 
 const corsHeaders = {
@@ -23,7 +16,6 @@ const corsHeaders = {
 
 const MAX_CALLS_PER_SECOND = 8;
 const API_DELAY_MS = Math.ceil(1000 / MAX_CALLS_PER_SECOND);
-const STALE_AFTER_MS = 10 * 60 * 1000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -45,93 +37,54 @@ Deno.serve(async (req) => {
 
   try {
     const now = new Date();
-    const nowIso = now.toISOString();
-    const nowMs = now.getTime();
+    const today = now.toISOString().slice(0, 10);
 
-    const { data: instruments, error: instrumentsError } = await supabase
-      .from("market_instruments")
-      .select("id,canonical_symbol,exchange_code,price_symbol,provider,last_price_at")
-      .eq("status", "active")
-      .not("price_symbol", "is", null);
+    const { data: assets, error: assetsError } = await supabase
+      .from("assets")
+      .select("id,symbol,price_symbol,price_provider,currency");
 
-    if (instrumentsError) throw instrumentsError;
+    if (assetsError) throw assetsError;
 
-    const staleInstruments = ((instruments ?? []) as MarketInstrument[]).filter((instrument) => {
-      if (!instrument.last_price_at) return true;
-      return (nowMs - new Date(instrument.last_price_at).getTime()) > STALE_AFTER_MS;
-    });
-
-    const summary = {
-      instruments_considered: (instruments ?? []).length,
-      instruments_stale: staleInstruments.length,
-      market_prices_inserted: 0,
-      legacy_prices_upserted: 0,
-      api_errors: 0,
-      skipped_missing_price: 0,
-    };
-
-    if (staleInstruments.length === 0) {
-      return new Response(JSON.stringify({ message: "No market instruments require updates", summary }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const symbolToInstruments = new Map<string, MarketInstrument[]>();
-
-    for (const instrument of staleInstruments) {
-      let resolvedSymbol = instrument.price_symbol;
-      const { data: candidates, error: candidateError } = await supabase.rpc("resolve_symbol_candidates", {
-        _raw_symbol: instrument.canonical_symbol,
-        _exchange: instrument.exchange_code,
-      });
-
-      if (!candidateError && Array.isArray(candidates) && candidates.length > 0) {
-        const best = [...(candidates as SymbolCandidate[])].sort((a, b) => {
-          if (a.rank_priority !== b.rank_priority) return a.rank_priority - b.rank_priority;
-          return b.rank_score - a.rank_score;
-        })[0];
-        if (best?.price_symbol) resolvedSymbol = best.price_symbol;
-      }
-
-      const arr = symbolToInstruments.get(resolvedSymbol) ?? [];
-      arr.push(instrument);
-      symbolToInstruments.set(resolvedSymbol, arr);
-    }
-
-    const marketPriceRows: Array<{
-      instrument_id: string;
+    const priceRows: Array<{
+      asset_id: string;
       price: number;
       currency: string;
-      price_timestamp: string;
+      price_date: string;
       source: string;
-      raw_payload: Record<string, unknown>;
     }> = [];
 
-    const updatedInstrumentIds = new Set<string>();
+    const summary = {
+      assets_considered: (assets ?? []).length,
+      prices_upserted: 0,
+      skipped_missing_symbol: 0,
+      skipped_missing_price: 0,
+      api_errors: 0,
+    };
 
-    const symbols = [...symbolToInstruments.keys()];
+    for (let i = 0; i < (assets ?? []).length; i += 1) {
+      const asset = assets![i] as AssetRow;
+      const symbol = (asset.price_symbol ?? asset.symbol ?? "").trim();
 
-    for (let i = 0; i < symbols.length; i += 1) {
-      const symbol = symbols[i];
+      if (!symbol) {
+        summary.skipped_missing_symbol += 1;
+        continue;
+      }
+
       try {
         const response = await fetch(
           `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`,
         );
-        const payload = await response.json() as { price?: string; currency?: string; status?: string };
+        const payload = await response.json() as { price?: string; currency?: string };
         const parsedPrice = Number(payload.price);
 
         if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
-          for (const instrument of symbolToInstruments.get(symbol) ?? []) {
-            marketPriceRows.push({
-              instrument_id: instrument.id,
-              price: parsedPrice,
-              currency: (payload.currency || "USD").toUpperCase(),
-              price_timestamp: nowIso,
-              source: instrument.provider || "twelve_data",
-              raw_payload: payload as unknown as Record<string, unknown>,
-            });
-            updatedInstrumentIds.add(instrument.id);
-          }
+          priceRows.push({
+            asset_id: asset.id,
+            price: parsedPrice,
+            currency: (payload.currency ?? asset.currency ?? "USD").toUpperCase(),
+            price_date: today,
+            source: asset.price_provider ?? "twelve_data",
+          });
         } else {
           summary.skipped_missing_price += 1;
         }
@@ -139,64 +92,22 @@ Deno.serve(async (req) => {
         summary.api_errors += 1;
       }
 
-      if (i < symbols.length - 1) await sleep(API_DELAY_MS);
+      if (i < (assets ?? []).length - 1) await sleep(API_DELAY_MS);
     }
 
-    if (marketPriceRows.length > 0) {
-      const { error: marketPriceError } = await supabase
-        .from("market_prices")
-        .insert(marketPriceRows);
+    if (priceRows.length > 0) {
+      const { error: upsertError } = await supabase
+        .from("asset_prices")
+        .upsert(priceRows, { onConflict: "asset_id,price_date" });
 
-      if (marketPriceError) throw marketPriceError;
-      summary.market_prices_inserted = marketPriceRows.length;
-
-      const { error: instrumentUpdateError } = await supabase
-        .from("market_instruments")
-        .update({ last_price_at: nowIso, updated_at: nowIso })
-        .in("id", [...updatedInstrumentIds]);
-
-      if (instrumentUpdateError) throw instrumentUpdateError;
-
-      const { data: linkedAssets, error: linkedAssetsError } = await supabase
-        .from("assets")
-        .select("id,instrument_id")
-        .in("instrument_id", [...updatedInstrumentIds]);
-
-      if (linkedAssetsError) throw linkedAssetsError;
-
-      const latestPriceByInstrument = new Map<string, (typeof marketPriceRows)[number]>();
-      for (const row of marketPriceRows) {
-        latestPriceByInstrument.set(row.instrument_id, row);
-      }
-
-      const legacyRows = (linkedAssets ?? []).flatMap((asset: { id: string; instrument_id: string | null }) => {
-        if (!asset.instrument_id) return [];
-        const latest = latestPriceByInstrument.get(asset.instrument_id);
-        if (!latest) return [];
-        const date = latest.price_timestamp.slice(0, 10);
-        return [{
-          asset_id: asset.id,
-          price: latest.price,
-          currency: latest.currency,
-          as_of_date: date,
-          price_date: date,
-          source: latest.source,
-        }];
-      });
-
-      if (legacyRows.length > 0) {
-        const { error: legacyError } = await supabase
-          .from("prices")
-          .upsert(legacyRows, { onConflict: "asset_id,price_date" });
-        if (legacyError) throw legacyError;
-        summary.legacy_prices_upserted = legacyRows.length;
-      }
+      if (upsertError) throw upsertError;
+      summary.prices_upserted = priceRows.length;
     }
 
     const { error: refreshError } = await supabase.rpc("refresh_portfolio_valuations");
     if (refreshError) throw refreshError;
 
-    return new Response(JSON.stringify({ message: "Prices updated", summary }), {
+    return new Response(JSON.stringify({ message: "Asset prices updated", summary }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
