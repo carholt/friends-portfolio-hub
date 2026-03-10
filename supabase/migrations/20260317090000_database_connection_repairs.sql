@@ -344,6 +344,9 @@ AS $$
   );
 $$;
 
+-- Existing environments may already have ai_scan_companies(jsonb) with a different return type.
+DROP FUNCTION IF EXISTS public.ai_scan_companies(JSONB);
+
 CREATE OR REPLACE FUNCTION public.ai_scan_companies(checklist JSONB DEFAULT '[]'::jsonb)
 RETURNS JSONB
 LANGUAGE sql
