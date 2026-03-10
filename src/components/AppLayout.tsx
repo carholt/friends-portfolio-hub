@@ -7,6 +7,7 @@ import { useAppBootstrap } from "@/hooks/useAppBootstrap";
 import { DebugPanel } from "@/components/DebugPanel";
 
 const navItems = [
+  { to: "/dashboard", label: "Dashboard", icon: Home },
   { to: "/home", label: "Home", icon: Home },
   { to: "/portfolios", label: "Portfolios", icon: Briefcase },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy },

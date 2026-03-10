@@ -7,7 +7,7 @@ export default function PublicOnlyRoute() {
 
   if (loading) return <div className="p-6 space-y-3"><Skeleton className="h-10 w-1/3" /><Skeleton className="h-24 w-full" /></div>;
 
-  if (user) return <Navigate to="/home" replace />;
+  if (user) return <Navigate to="/dashboard" replace />;
 
   return <Outlet />;
 }

@@ -21,7 +21,7 @@ export default function Login() {
     if (error) {
       toast.error(error.message);
     } else {
-      navigate("/home");
+      navigate("/dashboard");
     }
     setLoading(false);
   };
@@ -31,7 +31,7 @@ export default function Login() {
   const handleOAuthLogin = async (provider: "google" | "apple" | "github") => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
-      options: { redirectTo: `${window.location.origin}/home` },
+      options: { redirectTo: `${window.location.origin}/dashboard` },
     });
     if (error) toast.error(error.message);
   };
