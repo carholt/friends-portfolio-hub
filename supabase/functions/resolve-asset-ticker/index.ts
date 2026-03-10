@@ -32,6 +32,53 @@ const exchangeFromSuggestion = (item: Record<string, unknown>) => {
 };
 
 async function suggestTicker(apiKey: string, isin: string, name: string) {
+  const normalizeName = (value: string) => value
+    .toUpperCase()
+    .replace(/&/g, " AND ")
+    .replace(/[^A-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const scoreNameMatch = (needle: string, candidate: string) => {
+    const n = normalizeName(needle);
+    const c = normalizeName(candidate);
+    if (!n || !c) return 0;
+    if (n === c) return 100;
+    if (c.includes(n) || n.includes(c)) return 80;
+
+    const nTokens = n.split(" ").filter((token) => token.length > 1);
+    const cTokens = new Set(c.split(" ").filter((token) => token.length > 1));
+    if (nTokens.length === 0 || cTokens.size === 0) return 0;
+    const overlap = nTokens.filter((token) => cTokens.has(token)).length;
+    return Math.round((overlap / Math.max(nTokens.length, cTokens.size)) * 70);
+  };
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const service = createClient(supabaseUrl, serviceRoleKey);
+
+  const { data: companyUniverse = [] } = await service
+    .from("companies")
+    .select("canonical_symbol,name,exchange")
+    .limit(500);
+  const localMatches = (companyUniverse || [])
+    .map((company: Record<string, unknown>) => {
+      const symbol = String(company.canonical_symbol || "").toUpperCase();
+      const companyName = String(company.name || "");
+      return {
+        symbol,
+        name: companyName,
+        exchange_code: normalizeExchange(String(company.exchange || "")),
+        score: scoreNameMatch(name, companyName),
+      };
+    })
+    .filter((candidate) => candidate.symbol && candidate.score >= 40)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+  if (localMatches.length > 0) {
+    const first = localMatches[0];
+    return { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: localMatches };
+  }
+
   const byIsin = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(isin)}&apikey=${apiKey}`);
   const isinPayload = await byIsin.json();
   const isinData = Array.isArray(isinPayload?.data) ? isinPayload.data : [];
