@@ -10,15 +10,14 @@ describe("update-prices edge function", () => {
     expect(source).toContain("API_DELAY_MS = Math.ceil(1000 / MAX_CALLS_PER_SECOND)");
   });
 
-  it("filters stale market instruments older than 10 minutes", () => {
-    expect(source).toContain("from(\"market_instruments\")");
-    expect(source).toContain("STALE_AFTER_MS = 10 * 60 * 1000");
-    expect(source).toContain("(nowMs - new Date(instrument.last_price_at).getTime()) > STALE_AFTER_MS");
+  it("fetches all assets as the pricing source set", () => {
+    expect(source).toContain("from(\"assets\")");
+    expect(source).toContain("select(\"id,symbol,price_symbol,price_provider,currency\")");
   });
 
-  it("stores global prices and refreshes portfolio valuations", () => {
-    expect(source).toContain("from(\"market_prices\")");
-    expect(source).toContain("from(\"prices\")");
+  it("upserts asset_prices and refreshes portfolio valuations", () => {
+    expect(source).toContain("from(\"asset_prices\")");
+    expect(source).toContain("upsert(priceRows, { onConflict: \"asset_id,price_date\" })");
     expect(source).toContain("supabase.rpc(\"refresh_portfolio_valuations\")");
   });
 });
