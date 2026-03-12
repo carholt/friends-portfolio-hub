@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 describe("portfolio leaderboard SQL", () => {
-  const sql = readFileSync(
-    resolve(process.cwd(), "supabase/migrations/20260312120000_price_worker_valuation_cache_leaderboard.sql"),
-    "utf8",
-  );
+  const migrationsDir = resolve(process.cwd(), "supabase/migrations");
+  const sql = readdirSync(migrationsDir)
+    .filter((file) => file.endsWith(".sql"))
+    .map((file) => readFileSync(resolve(migrationsDir, file), "utf8"))
+    .join("\n");
 
   it("defines leaderboard view ordered by return percentage descending", () => {
     expect(sql).toContain("CREATE OR REPLACE VIEW public.portfolio_leaderboard AS");
-    expect(sql).toContain("ORDER BY return_pct DESC NULLS LAST");
+    expect(sql).toContain("ORDER BY pl.return_pct DESC NULLS LAST, pl.total_value DESC");
   });
 
   it("exposes get_portfolio_leaderboard RPC with limit", () => {
