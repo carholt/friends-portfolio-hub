@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -12,11 +13,13 @@ import { logAuditAction } from "@/lib/audit";
 
 interface Props { open: boolean; onOpenChange: (v: boolean) => void; onCreated: () => void; }
 
+type PortfolioVisibility = Database["public"]["Enums"]["portfolio_visibility"];
+
 export default function CreatePortfolioDialog({ open, onOpenChange, onCreated }: Props) {
   const { user } = useAuth();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState("private");
+  const [visibility, setVisibility] = useState<PortfolioVisibility>("private");
   const [baseCurrency, setBaseCurrency] = useState("SEK");
   const [groupId, setGroupId] = useState<string>("none");
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
@@ -47,7 +50,7 @@ export default function CreatePortfolioDialog({ open, onOpenChange, onCreated }:
     setLoading(true);
     const slug = visibility === "public" ? `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${Date.now().toString(36)}` : null;
     const { data, error } = await supabase.from("portfolios").insert({
-      owner_user_id: user.id, name: name.trim(), description: description.trim() || null, visibility: visibility as any,
+      owner_user_id: user.id, name: name.trim(), description: description.trim() || null, visibility,
       group_id: visibility === "group" ? groupId : null, base_currency: baseCurrency, public_slug: slug, broker, broker_notes: brokerNotes || null,
     }).select("id").single();
 
