@@ -260,6 +260,8 @@ export type Database = {
       portfolios: {
         Row: {
           base_currency: string
+          broker: string | null
+          broker_notes: string | null
           created_at: string
           description: string | null
           group_id: string | null
@@ -272,6 +274,8 @@ export type Database = {
         }
         Insert: {
           base_currency?: string
+          broker?: string | null
+          broker_notes?: string | null
           created_at?: string
           description?: string | null
           group_id?: string | null
@@ -284,6 +288,8 @@ export type Database = {
         }
         Update: {
           base_currency?: string
+          broker?: string | null
+          broker_notes?: string | null
           created_at?: string
           description?: string | null
           group_id?: string | null
