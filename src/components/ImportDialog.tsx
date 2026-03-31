@@ -290,7 +290,26 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           }).select("id").single();
 
           if (error || !created?.id) {
-            toast.error(`Could not create portfolio for ${group.accountName}.`);
+            const technicalDetail = error?.message || "Portfolio insert returned no id.";
+            const auditDetails = {
+              broker: "nordea",
+              account_key: group.accountKey,
+              account_name: group.accountName,
+              selection,
+              visibility: selection.visibility,
+              base_currency: selection.baseCurrency,
+              import_mode: mode,
+              technical_detail: technicalDetail,
+            };
+
+            await logAuditAction("import_portfolio_create_failed", "portfolio", undefined, auditDetails);
+            console.error("Nordea portfolio create failed", auditDetails);
+
+            const friendlyMessage = `Could not create portfolio for ${group.accountName}.`;
+            const detailedMessage = `${friendlyMessage}: ${technicalDetail}`;
+            toast.error(import.meta.env.DEV ? detailedMessage : friendlyMessage, {
+              description: !import.meta.env.DEV ? "Open details for technical information." : undefined,
+            });
             return;
           }
 
