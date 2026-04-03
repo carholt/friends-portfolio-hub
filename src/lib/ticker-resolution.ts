@@ -70,15 +70,26 @@ export function preserveIsinMetadata(metadata: Record<string, unknown> | null | 
 }
 
 export function applyTickerResolutionsToRows(rows: any[], resolutions: Record<string, string>) {
+  const normalizedResolutions = new Map(
+    Object.entries(resolutions).map(([isin, value]) => [String(isin).trim().toUpperCase(), value]),
+  );
+
   return rows.map((row) => {
     const isin = String(row?.metadata_json?.isin ?? row.symbol ?? "").trim();
-    const ticker = resolutions[isin];
+    const normalizedIsin = isin.toUpperCase();
+    const ticker = normalizedResolutions.get(normalizedIsin);
     if (!ticker) return row;
+
+    const parsed = extractTickerAndExchange(ticker);
+    const metadata = preserveIsinMetadata((row.metadata_json as Record<string, unknown> | undefined) ?? {}, isin);
+    if (parsed.exchange) {
+      metadata.exchange = parsed.exchange;
+    }
 
     return {
       ...row,
-      symbol: normalizeTicker(ticker),
-      metadata_json: preserveIsinMetadata((row.metadata_json as Record<string, unknown> | undefined) ?? {}, isin),
+      symbol: parsed.ticker,
+      metadata_json: metadata,
     };
   });
 }
