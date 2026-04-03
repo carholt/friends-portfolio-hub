@@ -123,12 +123,12 @@ type RpcErrorLike = { code?: string; message?: string } | null | undefined;
 function shouldRetryWithLegacyArgument(error: RpcErrorLike) {
   if (!error || error.code !== "PGRST202") return false;
   const message = String(error.message ?? "").toLowerCase();
-  return message.includes("get_portfolio_mining_dashboard") && message.includes("portfolio_id");
+  return message.includes("get_portfolio_mining_dashboard") && message.includes("_portfolio_id");
 }
 
 async function requestMiningDashboard(portfolioId: string, useLegacyArgument = false) {
   return supabase.rpc("get_portfolio_mining_dashboard" as never, {
-    [useLegacyArgument ? "portfolio_id" : "_portfolio_id"]: portfolioId,
+    [useLegacyArgument ? "_portfolio_id" : "portfolio_id"]: portfolioId,
   } as never);
 }
 

@@ -19,14 +19,14 @@ describe("fetchMiningDashboard", () => {
 
     await fetchMiningDashboard("portfolio-1");
 
-    expect(rpc).toHaveBeenCalledWith("get_portfolio_mining_dashboard", { _portfolio_id: "portfolio-1" });
+    expect(rpc).toHaveBeenCalledWith("get_portfolio_mining_dashboard", { portfolio_id: "portfolio-1" });
   });
 
   it("falls back to legacy portfolio_id when PostgREST schema cache expects old signature", async () => {
     rpc
       .mockResolvedValueOnce({
         data: null,
-        error: { code: "PGRST202", message: "Could not find the function public.get_portfolio_mining_dashboard(portfolio_id) in the schema cache" },
+        error: { code: "PGRST202", message: "Could not find the function public.get_portfolio_mining_dashboard(_portfolio_id) in the schema cache" },
       })
       .mockResolvedValueOnce({ data: {}, error: null });
 
@@ -34,8 +34,8 @@ describe("fetchMiningDashboard", () => {
 
     await fetchMiningDashboard("portfolio-2");
 
-    expect(rpc).toHaveBeenNthCalledWith(1, "get_portfolio_mining_dashboard", { _portfolio_id: "portfolio-2" });
-    expect(rpc).toHaveBeenNthCalledWith(2, "get_portfolio_mining_dashboard", { portfolio_id: "portfolio-2" });
+    expect(rpc).toHaveBeenNthCalledWith(1, "get_portfolio_mining_dashboard", { portfolio_id: "portfolio-2" });
+    expect(rpc).toHaveBeenNthCalledWith(2, "get_portfolio_mining_dashboard", { _portfolio_id: "portfolio-2" });
   });
 
   it("does not retry when PGRST202 is unrelated to dashboard RPC signature", async () => {
