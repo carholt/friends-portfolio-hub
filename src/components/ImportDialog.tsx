@@ -371,6 +371,56 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   };
 
   const allResolved = resolverItems.every((item) => tickerResolutions[item.isin]?.trim());
+  const nordeaResolvedCount = useMemo(() => (
+    resolverItems.filter((item) => Boolean(tickerResolutions[item.isin]?.trim())).length
+  ), [resolverItems, tickerResolutions]);
+
+  useEffect(() => {
+    if (!detectedNordea || resolverItems.length === 0) return;
+
+    let active = true;
+    const queue = resolverItems.filter((item) => !(item.isin in tickerSuggestions));
+    if (queue.length === 0) return;
+
+    const workers = Array.from({ length: Math.min(4, queue.length) }).map(async () => {
+      while (queue.length && active) {
+        const item = queue.shift();
+        if (!item) break;
+
+        const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", {
+          body: { mode: "suggest", isin: item.isin, name: item.name, mic: item.mic },
+        });
+        if (error || !active) continue;
+
+        const symbols = ((data?.suggestions || []) as any[])
+          .map((x) => {
+            const symbol = String(x.symbol || "").toUpperCase().trim();
+            const exchange = String(x.exchange_code || x.exchange || "").toUpperCase().trim();
+            if (!symbol) return "";
+            return exchange ? `${symbol}:${exchange}` : symbol;
+          })
+          .filter(Boolean)
+          .slice(0, 3);
+
+        setTickerSuggestions((prev) => ({ ...prev, [item.isin]: symbols }));
+
+        if (data?.suggested) {
+          setTickerResolutions((prev) => {
+            if (prev[item.isin]?.trim()) return prev;
+            return { ...prev, [item.isin]: normalizeTicker(String(data.suggested)) };
+          });
+        }
+      }
+    });
+
+    Promise.all(workers).catch(() => {
+      // no-op: keep manual "Suggest" action as fallback
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [detectedNordea, resolverItems, tickerSuggestions]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetImport(); }}>
@@ -385,15 +435,21 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
             <div className="flex items-center gap-2">
               <p className="text-sm">Preview and validation ({validRows.length}/{rows.length} valid)</p>
               {detectedNordea && <Badge variant="secondary">Nordea format detected</Badge>}
-              <Badge variant={invalidResolutionCount > 0 ? "destructive" : "outline"}>
-                Resolution: {resolvedPreviewCount}/{validRows.length} resolved
-              </Badge>
+              {detectedNordea ? (
+                <Badge variant={nordeaResolvedCount < resolverItems.length ? "secondary" : "outline"}>
+                  ISIN mappings: {nordeaResolvedCount}/{resolverItems.length} prefilled
+                </Badge>
+              ) : (
+                <Badge variant={invalidResolutionCount > 0 ? "destructive" : "outline"}>
+                  Resolution: {resolvedPreviewCount}/{validRows.length} resolved
+                </Badge>
+              )}
             </div>
             <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
           </div>
           <p className="text-xs text-muted-foreground">
             {detectedNordea
-              ? "Nordea mapping is auto-applied from ISIN/name and validated below."
+              ? "Nordea ISIN ticker suggestions are prefetched now and prefilled for review in Step 5."
               : "Current mapping: symbol→symbol, quantity→quantity, avg cost→avg_cost"}
           </p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Row status</TableHead><TableHead>Ticker resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
           <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={importManualInvalid} onChange={(e) => setImportManualInvalid(e.target.checked)} />Import anyway as manual/unpriced for invalid symbols</label>
@@ -428,7 +484,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         </div>}
 
         {detectedNordea && step === 5 && <div className="space-y-3">
-          <p className="text-sm font-medium">Resolve tickers (recommended)</p>
+          <p className="text-sm font-medium">Resolve tickers ({nordeaResolvedCount}/{resolverItems.length} mapped)</p>
           <Table><TableHeader><TableRow><TableHead>Name / ISIN</TableHead><TableHead>Ticker (required)</TableHead><TableHead>Suggestions</TableHead></TableRow></TableHeader><TableBody>
             {resolverItems.map((item) => <TableRow key={item.isin}><TableCell><div className="font-medium">{item.name}</div><div className="text-xs text-muted-foreground">{item.isin}</div></TableCell><TableCell><Input value={tickerResolutions[item.isin] || ""} onChange={(e) => setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(e.target.value) }))} placeholder="e.g. AAPL" /></TableCell><TableCell><div className="flex gap-2 items-center"><Button variant="outline" size="sm" onClick={() => fetchSuggestion(item)}>Suggest</Button><div className="text-xs">{(tickerSuggestions[item.isin] || []).join(", ") || "No suggestions yet"}</div></div></TableCell></TableRow>)}
           </TableBody></Table>
