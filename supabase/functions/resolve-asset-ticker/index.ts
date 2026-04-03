@@ -15,6 +15,19 @@ type Resolution = {
   exchange?: string;
 };
 
+type Suggestion = {
+  symbol: string;
+  exchange_code: string | null;
+  name: string;
+  score: number;
+  source: string;
+};
+
+type SuggestResult = {
+  suggested: string;
+  suggestions: Suggestion[];
+};
+
 const normalize = (v: string) => v.trim().toUpperCase();
 const normalizeExchange = (v?: string | null) => (v || "").trim().toUpperCase() || null;
 const normalizeName = (value: string) => value
@@ -95,7 +108,7 @@ const micToExchange: Record<string, string> = {
   XETR: "XETRA",
   XLON: "LSE",
 };
-const suggestionCache = new Map<string, { suggested: string; suggestions: Record<string, unknown>[] }>();
+const suggestionCache = new Map<string, SuggestResult>();
 const providerSymbol = (ticker: string, exchange?: string | null) => {
   const cleanExchange = normalizeExchange(exchange);
   return cleanExchange ? `${normalize(ticker)}:${cleanExchange}` : normalize(ticker);
@@ -109,27 +122,31 @@ const exchangeFromSuggestion = (item: Record<string, unknown>) => {
   return mic;
 };
 
-const normalizeSuggestions = (
-  suggestions: Record<string, unknown>[],
-  preferredExchange: string | null,
-) => {
+const normalizeSuggestions = (suggestions: Record<string, unknown>[], preferredExchange: string | null): Suggestion[] => {
   const normalized = suggestions
-    .slice(0, 12)
-    .map((entry) => ({
-      ...entry,
-      exchange_code: exchangeFromSuggestion(entry),
-    }));
+    .slice(0, 20)
+    .map((entry) => {
+      const symbol = normalize(String(entry.symbol || ""));
+      const name = String(entry.instrument_name || entry.name || "");
+      const exchangeCode = exchangeFromSuggestion(entry);
+      const exchangeMatchBonus = preferredExchange && exchangeCode === preferredExchange ? 20 : 0;
+      return {
+        symbol,
+        exchange_code: exchangeCode,
+        name,
+        score: 60 + exchangeMatchBonus,
+        source: "twelvedata",
+      };
+    })
+    .filter((entry) => entry.symbol);
 
-  if (!preferredExchange) return normalized;
-
-  return normalized.sort((a, b) => {
-    const aExchange = normalizeExchange(String(a.exchange_code || ""));
-    const bExchange = normalizeExchange(String(b.exchange_code || ""));
-    const aMatch = aExchange === preferredExchange ? 1 : 0;
-    const bMatch = bExchange === preferredExchange ? 1 : 0;
-    if (aMatch !== bMatch) return bMatch - aMatch;
-    return 0;
-  });
+  return normalized
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      if ((a.exchange_code || "") !== (b.exchange_code || "")) return (a.exchange_code || "").localeCompare(b.exchange_code || "");
+      return a.symbol.localeCompare(b.symbol);
+    })
+    .slice(0, 6);
 };
 
 const scoreNameMatch = (needle: string, candidate: string) => {
@@ -171,27 +188,147 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
   const cached = suggestionCache.get(cacheKey);
   if (cached) return cached;
 
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const service = createClient(supabaseUrl, serviceRoleKey);
+
+  const { data: persistedMapping } = await service
+    .from("instrument_mappings")
+    .select("isin,ticker,name,exchange,currency,source")
+    .eq("isin", isin)
+    .maybeSingle();
+  if (persistedMapping?.ticker) {
+    const persistedResult: SuggestResult = {
+      suggested: providerSymbol(String(persistedMapping.ticker), String(persistedMapping.exchange || "")),
+      suggestions: [{
+        symbol: normalize(String(persistedMapping.ticker)),
+        exchange_code: normalizeExchange(String(persistedMapping.exchange || "")),
+        name: String(persistedMapping.name || name || isin),
+        score: 100,
+        source: String(persistedMapping.source || "instrument_mappings"),
+      }],
+    };
+    suggestionCache.set(cacheKey, persistedResult);
+    return persistedResult;
+  }
+
   const curatedIsin = CURATED_ISIN_SYMBOLS[isin];
   if (curatedIsin) {
-    const curatedByIsinResult = {
+    const curatedByIsinResult: SuggestResult = {
       suggested: providerSymbol(curatedIsin.symbol, curatedIsin.exchange),
-      suggestions: [{ symbol: curatedIsin.symbol, exchange_code: curatedIsin.exchange, name: curatedIsin.name || name, score: 100, source: "curated_isin" }],
+      suggestions: [{
+        symbol: curatedIsin.symbol,
+        exchange_code: curatedIsin.exchange,
+        name: curatedIsin.name || name,
+        score: 100,
+        source: "curated_isin",
+      }],
     };
+    await service.from("instrument_mappings").upsert({
+      isin,
+      ticker: curatedIsin.symbol,
+      name: curatedIsin.name || name,
+      exchange: curatedIsin.exchange,
+      source: "curated_isin",
+      currency: null,
+    }, { onConflict: "isin" });
     suggestionCache.set(cacheKey, curatedByIsinResult);
     return curatedByIsinResult;
   }
 
-  const curatedMatches = curatedMatchesByName(name, preferredExchange);
+  const { data: knownAssetByIsin } = await service
+    .from("assets")
+    .select("symbol,name,exchange,currency")
+    .eq("metadata_json->>isin", isin)
+    .not("symbol", "eq", isin)
+    .limit(1)
+    .maybeSingle();
+  if (knownAssetByIsin?.symbol) {
+    const symbol = normalize(String(knownAssetByIsin.symbol));
+    const exchangeCode = normalizeExchange(String(knownAssetByIsin.exchange || ""));
+    const knownResult: SuggestResult = {
+      suggested: providerSymbol(symbol, exchangeCode),
+      suggestions: [{
+        symbol,
+        exchange_code: exchangeCode,
+        name: String(knownAssetByIsin.name || name || isin),
+        score: 96,
+        source: "assets_metadata",
+      }],
+    };
+    await service.from("instrument_mappings").upsert({
+      isin,
+      ticker: symbol,
+      name: String(knownAssetByIsin.name || name || isin),
+      exchange: exchangeCode,
+      currency: String(knownAssetByIsin.currency || "").trim().toUpperCase() || null,
+      source: "assets_metadata",
+    }, { onConflict: "isin" });
+    suggestionCache.set(cacheKey, knownResult);
+    return knownResult;
+  }
+
+  const { data: aliasByIsin = [] } = await service
+    .from("symbol_aliases")
+    .select("canonical_symbol,exchange,asset_name_hint,confidence")
+    .eq("isin", isin)
+    .not("canonical_symbol", "is", null)
+    .order("confidence", { ascending: false })
+    .limit(3);
+  if (aliasByIsin.length > 0) {
+    const aliasSuggestions: Suggestion[] = aliasByIsin
+      .map((alias) => ({
+        symbol: normalize(String(alias.canonical_symbol || "")),
+        exchange_code: normalizeExchange(String(alias.exchange || "")),
+        name: String(alias.asset_name_hint || name || isin),
+        score: Math.round(Number(alias.confidence || 0) * 100),
+        source: "symbol_aliases",
+      }))
+      .filter((candidate) => candidate.symbol);
+    if (aliasSuggestions.length > 0) {
+      aliasSuggestions.sort((a, b) => {
+        if (a.score !== b.score) return b.score - a.score;
+        if ((a.exchange_code || "") !== (b.exchange_code || "")) return (a.exchange_code || "").localeCompare(b.exchange_code || "");
+        return a.symbol.localeCompare(b.symbol);
+      });
+      const first = aliasSuggestions[0];
+      const aliasResult: SuggestResult = {
+        suggested: providerSymbol(first.symbol, first.exchange_code),
+        suggestions: aliasSuggestions,
+      };
+      await service.from("instrument_mappings").upsert({
+        isin,
+        ticker: first.symbol,
+        name: first.name,
+        exchange: first.exchange_code,
+        source: "symbol_aliases",
+      }, { onConflict: "isin" });
+      suggestionCache.set(cacheKey, aliasResult);
+      return aliasResult;
+    }
+  }
+
+  const curatedMatches = curatedMatchesByName(name, preferredExchange)
+    .map((entry) => ({
+      symbol: normalize(entry.symbol),
+      exchange_code: normalizeExchange(entry.exchange_code),
+      name: String(entry.name || name || isin),
+      score: Number(entry.score || 0),
+      source: String(entry.source || "curated_catalog"),
+    }));
   if (curatedMatches.length > 0) {
     const first = curatedMatches[0];
-    const curatedResult = { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: curatedMatches.slice(0, 3) };
+    const curatedResult: SuggestResult = { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: curatedMatches.slice(0, 3) };
+    await service.from("instrument_mappings").upsert({
+      isin,
+      ticker: first.symbol,
+      name: first.name,
+      exchange: first.exchange_code,
+      source: "curated_catalog",
+    }, { onConflict: "isin" });
     suggestionCache.set(cacheKey, curatedResult);
     return curatedResult;
   }
-
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const service = createClient(supabaseUrl, serviceRoleKey);
 
   const { data: companyUniverse = [] } = await service
     .from("companies")
@@ -211,15 +348,29 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
     .filter((candidate) => candidate.symbol && candidate.score >= 40)
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
-  if (localMatches.length > 0) {
+  if (localMatches.length > 0 && Number(localMatches[0].score) >= 75) {
     const first = localMatches[0];
-    const localResult = { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: localMatches };
+    const normalizedLocal: Suggestion[] = localMatches.map((candidate) => ({
+      symbol: normalize(String(candidate.symbol || "")),
+      exchange_code: normalizeExchange(String(candidate.exchange_code || "")),
+      name: String(candidate.name || name || isin),
+      score: Number(candidate.score || 0),
+      source: "companies",
+    }));
+    const localResult: SuggestResult = { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: normalizedLocal };
+    await service.from("instrument_mappings").upsert({
+      isin,
+      ticker: normalize(first.symbol),
+      name: String(first.name || name || isin),
+      exchange: normalizeExchange(String(first.exchange_code || "")),
+      source: "companies",
+    }, { onConflict: "isin" });
     suggestionCache.set(cacheKey, localResult);
     return localResult;
   }
 
   if (!apiKey) {
-    const emptyResult = { suggested: "", suggestions: [] as Record<string, unknown>[] };
+    const emptyResult: SuggestResult = { suggested: "", suggestions: [] };
     suggestionCache.set(cacheKey, emptyResult);
     return emptyResult;
   }
@@ -230,7 +381,16 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
   if (isinData.length > 0) {
     const normalized = normalizeSuggestions(isinData, preferredExchange);
     const first = normalized[0];
-    const isinResult = { suggested: providerSymbol(String(first.symbol || ""), String(first.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+    const isinResult: SuggestResult = { suggested: providerSymbol(String(first.symbol || ""), String(first.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+    if (first?.symbol) {
+      await service.from("instrument_mappings").upsert({
+        isin,
+        ticker: first.symbol,
+        name: first.name || name || isin,
+        exchange: first.exchange_code,
+        source: "twelvedata_isin",
+      }, { onConflict: "isin" });
+    }
     suggestionCache.set(cacheKey, isinResult);
     return isinResult;
   }
@@ -240,7 +400,16 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
   const nameData = Array.isArray(namePayload?.data) ? namePayload.data : [];
   const normalized = normalizeSuggestions(nameData, preferredExchange);
   const first = normalized[0];
-  const nameResult = { suggested: providerSymbol(String(first?.symbol || ""), String(first?.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+  const nameResult: SuggestResult = { suggested: providerSymbol(String(first?.symbol || ""), String(first?.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+  if (first?.symbol) {
+    await service.from("instrument_mappings").upsert({
+      isin,
+      ticker: first.symbol,
+      name: first.name || name || isin,
+      exchange: first.exchange_code,
+      source: "twelvedata_name",
+    }, { onConflict: "isin" });
+  }
   suggestionCache.set(cacheKey, nameResult);
   return nameResult;
 }
@@ -362,6 +531,14 @@ Deno.serve(async (req) => {
       }
 
       if (targetAssetId) {
+        await service.from("instrument_mappings").upsert({
+          isin,
+          ticker,
+          name: item.name || ticker,
+          exchange,
+          currency: item.currency || sourceAsset?.currency || null,
+          source: "manual_apply",
+        }, { onConflict: "isin" });
         results.push({ isin, ticker, asset_id: targetAssetId });
       }
     }

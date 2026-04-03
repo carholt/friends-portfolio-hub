@@ -519,7 +519,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
               </div>
             );
           })}
-          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(3)}>Back</Button><Button onClick={() => setStep(5)}>Continue</Button></div>
+          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(3)}>Back</Button><Button onClick={() => setStep(allResolved ? 6 : 5)}>{allResolved ? "Continue to import" : "Continue"}</Button></div>
         </div>}
 
         {detectedNordea && step === 5 && <div className="space-y-3">
