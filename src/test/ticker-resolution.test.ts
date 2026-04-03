@@ -33,6 +33,8 @@ describe("ticker resolution utilities", () => {
 
   it("builds exchange-qualified symbols for Twelve Data when needed", () => {
     expect(exchangeFromMic("XTSE")).toBe("TSX");
+    expect(exchangeFromMic("XNAS")).toBe("NASDAQ");
+    expect(exchangeFromMic("XNYS")).toBe("NYSE");
     expect(buildProviderSymbol("PAAS", "tsx")).toBe("PAAS:TSX");
     expect(extractTickerAndExchange("ag:tsxv")).toEqual({ ticker: "AG", exchange: "TSXV" });
   });
