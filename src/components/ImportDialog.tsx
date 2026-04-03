@@ -114,6 +114,53 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     return data;
   }, []);
 
+  useEffect(() => {
+    if (!detectedNordea || step !== 3 || resolverItems.length === 0) return;
+
+    let active = true;
+    const runPrefetch = async () => {
+      const unresolvedItems = resolverItems.filter((item) => !tickerResolutions[item.isin]?.trim());
+      if (unresolvedItems.length === 0) return;
+
+      const preResolved = await Promise.all(unresolvedItems.map(async (item) => {
+        const result = await resolveViaApi(item.isin);
+        return { isin: item.isin, result };
+      }));
+
+      if (!active) return;
+
+      setTickerResolutions((prev) => {
+        const next = { ...prev };
+        preResolved.forEach(({ isin, result }) => {
+          if (next[isin]?.trim()) return;
+          if (result?.ticker) {
+            next[isin] = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
+          }
+        });
+        return next;
+      });
+
+      setTickerSuggestions((prev) => {
+        const next = { ...prev };
+        preResolved.forEach(({ isin, result }) => {
+          if (result?.ticker) {
+            const formatted = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
+            next[isin] = [formatted];
+          }
+        });
+        return next;
+      });
+    };
+
+    runPrefetch().catch(() => {
+      // non-blocking prefetch
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [detectedNordea, resolveViaApi, resolverItems, step, tickerResolutions]);
+
   const retryResolve = useCallback(async (isin: string) => {
     setResolverStatus((prev) => ({ ...prev, [isin]: "resolving" }));
     setResolverErrors((prev) => ({ ...prev, [isin]: "" }));
@@ -273,9 +320,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           });
 
           if (error) {
-            const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
-              body: { isin: symbol },
-            });
+            const fallbackData = await resolveViaApi(symbol);
             if (fallbackData?.ticker) {
               nextState[symbol] = { status: "resolved" };
               setTickerResolutions((prev) => {
@@ -317,7 +362,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     return () => {
       active = false;
     };
-  }, [detectedNordea, validRows]);
+  }, [detectedNordea, resolveViaApi, validRows]);
 
   const runImport = async () => {
     setBusy(true);
