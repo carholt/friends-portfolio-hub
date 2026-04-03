@@ -103,8 +103,8 @@ BEGIN
                WHEN lower(COALESCE(severity::text, '')) IN ('medium', 'med') THEN 'medium'
                ELSE 'low'
              END AS severity
-      FROM public.mining_insights
-      WHERE portfolio_id = get_portfolio_mining_dashboard.portfolio_id
+      FROM public.mining_insights mi
+      WHERE mi.portfolio_id = get_portfolio_mining_dashboard.portfolio_id
       ORDER BY created_at DESC
       LIMIT 20
     ),

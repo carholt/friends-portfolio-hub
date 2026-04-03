@@ -25,4 +25,10 @@ describe("get_portfolio_mining_dashboard SQL", () => {
     expect(sql).toContain("auth.role() = 'service_role'");
     expect(sql).toContain("GRANT EXECUTE ON FUNCTION public.get_portfolio_mining_dashboard(UUID) TO authenticated, service_role;");
   });
+
+  it("qualifies mining_insights portfolio scope in PL/pgSQL", () => {
+    expect(sql).toContain("FROM public.mining_insights mi");
+    expect(sql).toContain("WHERE mi.portfolio_id = get_portfolio_mining_dashboard.portfolio_id");
+  });
+
 });
