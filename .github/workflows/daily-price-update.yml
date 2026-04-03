@@ -21,7 +21,24 @@ jobs:
             exit 1
           fi
 
-          endpoint="${SUPABASE_FUNCTION_URL%/}/update-prices"
+          base_url="${SUPABASE_FUNCTION_URL%/}"
+          case "${base_url}" in
+            */update-prices)
+              endpoint="${base_url}"
+              ;;
+            *.functions.supabase.co|*.functions.supabase.co/*)
+              endpoint="${base_url}/update-prices"
+              ;;
+            */functions/v1)
+              endpoint="${base_url}/update-prices"
+              ;;
+            */functions/v1/*)
+              endpoint="${base_url}"
+              ;;
+            *)
+              endpoint="${base_url}/functions/v1/update-prices"
+              ;;
+          esac
           echo "Calling ${endpoint}"
 
           http_code=$(curl --silent --show-error \
