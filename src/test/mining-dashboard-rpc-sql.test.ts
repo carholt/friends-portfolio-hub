@@ -21,6 +21,12 @@ describe("get_portfolio_mining_dashboard SQL", () => {
     expect(sql).toContain("ERRCODE = 'insufficient_privilege'");
   });
 
+
+  it("qualifies portfolio_id in insights query to avoid ambiguity", () => {
+    expect(sql).toContain("FROM public.mining_insights mi");
+    expect(sql).toContain("WHERE mi.portfolio_id = get_portfolio_mining_dashboard.portfolio_id");
+  });
+
   it("preserves service_role access", () => {
     expect(sql).toContain("auth.role() = 'service_role'");
     expect(sql).toContain("GRANT EXECUTE ON FUNCTION public.get_portfolio_mining_dashboard(UUID) TO authenticated, service_role;");
