@@ -83,7 +83,7 @@ export default function AssetCompanyPage() {
       return pending ? 3000 : false;
     },
     queryFn: async () => {
-      const { data: rows, error: reportsError } = await (supabase as any)
+      const { data: rows, error: reportsError } = await supabase
         .from("company_ai_reports")
         .select("id,status,created_at,completed_at,report,sources,error,assumptions")
         .eq("asset_id", data!.asset!.id)
@@ -99,7 +99,7 @@ export default function AssetCompanyPage() {
     queryKey: ["asset-price-diagnostics", data?.asset?.id],
     enabled: !!data?.asset?.id,
     queryFn: async () => {
-      const { data: assetRow } = await (supabase as any)
+      const { data: assetRow } = await supabase
         .from("assets")
         .select("id,symbol,exchange_code,price_symbol,instrument_id")
         .eq("id", data!.asset!.id)
@@ -108,9 +108,9 @@ export default function AssetCompanyPage() {
       if (!assetRow?.instrument_id) return { asset: assetRow, instrument: null, latest: null, override: null };
 
       const [{ data: instrument }, { data: latest }, { data: override }] = await Promise.all([
-        (supabase as any).from("market_instruments").select("id,canonical_symbol,exchange_code,price_symbol,last_price_at").eq("id", assetRow.instrument_id).maybeSingle(),
-        (supabase as any).from("market_prices").select("price_timestamp,currency,price").eq("instrument_id", assetRow.instrument_id).order("price_timestamp", { ascending: false }).limit(1).maybeSingle(),
-        (supabase as any).from("symbol_aliases").select("resolution_source,is_active").eq("instrument_id", assetRow.instrument_id).eq("resolution_source", "manual_override").eq("is_active", true).limit(1).maybeSingle(),
+        supabase.from("market_instruments").select("id,canonical_symbol,exchange_code,price_symbol,last_price_at").eq("id", assetRow.instrument_id).maybeSingle(),
+        supabase.from("market_prices").select("price_timestamp,currency,price").eq("instrument_id", assetRow.instrument_id).order("price_timestamp", { ascending: false }).limit(1).maybeSingle(),
+        supabase.from("symbol_aliases").select("resolution_source,is_active").eq("instrument_id", assetRow.instrument_id).eq("resolution_source", "manual_override").eq("is_active", true).limit(1).maybeSingle(),
       ]);
 
       return { asset: assetRow, instrument: instrument || null, latest: latest || null, override: override || null };
@@ -125,7 +125,7 @@ export default function AssetCompanyPage() {
     queryKey: ["report-access", user?.id, latestCompleted?.id, env.paywallEnabled],
     enabled: env.paywallEnabled && !!user?.id && !!latestCompleted?.id,
     queryFn: async () => {
-      const { data: access, error: accessError } = await (supabase as any).rpc("user_has_access_to_report", {
+      const { data: access, error: accessError } = await supabase.rpc("user_has_access_to_report", {
         _user_id: user!.id,
         _report_id: latestCompleted!.id,
       });

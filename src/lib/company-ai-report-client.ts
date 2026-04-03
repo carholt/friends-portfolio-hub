@@ -7,7 +7,7 @@ export type RequestCompanyAiReportInput = {
 };
 
 export async function requestCompanyAiReport(input: RequestCompanyAiReportInput): Promise<string> {
-  const { data, error } = await (supabase as any).rpc("request_company_ai_report", {
+  const { data, error } = await supabase.rpc("request_company_ai_report", {
     _asset_id: input.assetId,
     _portfolio_id: input.portfolioId ?? null,
     _assumptions: input.assumptions ?? {},

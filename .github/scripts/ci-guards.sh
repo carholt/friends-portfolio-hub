@@ -25,4 +25,6 @@ if git grep -n -I -E '(service_role(_key)?\s*[:=]\s*["'"'"'][^"'"'"'<$[:space:]]
   exit 1
 fi
 
+node scripts/check-company-report-schema-refs.mjs
+
 echo "Repository safety guards passed."
