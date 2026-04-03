@@ -34,6 +34,15 @@ interface ImportSummary { inserted: number; updated: number; skipped: number; er
 
 interface Props { open: boolean; onOpenChange: (v: boolean) => void; portfolioId: string; onImported: () => void; }
 
+const formatResolvedTicker = (ticker: string, exchange?: string | null) => {
+  const normalizedTicker = normalizeTicker(ticker);
+  const normalizedExchange = String(exchange || "").toUpperCase().trim();
+  if (!normalizedExchange) return normalizedTicker;
+  if (normalizedTicker.includes(":")) return normalizedTicker;
+  if (normalizedTicker.endsWith(".TO") || normalizedTicker.endsWith(".V")) return normalizedTicker;
+  return `${normalizedTicker}:${normalizedExchange}`;
+};
+
 export default function ImportDialog({ open, onOpenChange, portfolioId, onImported }: Props) {
   const [step, setStep] = useState(1);
   const [format, setFormat] = useState<ImportFormat>("csv");
@@ -89,7 +98,16 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const fetchSuggestion = async (item: ResolverItem) => {
     const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", { body: { mode: "suggest", isin: item.isin, name: item.name, mic: item.mic } });
     if (error) {
-      toast.error(`No suggestions for ${item.isin}`);
+      const { data: fallbackData, error: fallbackError } = await supabase.functions.invoke("resolve-isin", {
+        body: { isin: item.isin },
+      });
+      if (fallbackError || !fallbackData?.ticker) {
+        toast.error(`No suggestions for ${item.isin}`);
+        return;
+      }
+      const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
+      setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
+      setTickerResolutions((prev) => ({ ...prev, [item.isin]: formatted }));
       return;
     }
 
@@ -113,7 +131,16 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     if (symbols[0]) {
       setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(symbols[0]) }));
     } else {
-      toast.error(`No suggestions for ${item.isin}`);
+      const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
+        body: { isin: item.isin },
+      });
+      if (fallbackData?.ticker) {
+        const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
+        setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
+        setTickerResolutions((prev) => ({ ...prev, [item.isin]: formatted }));
+      } else {
+        toast.error(`No suggestions for ${item.isin}`);
+      }
     }
   };
 
@@ -253,6 +280,17 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           });
 
           if (error) {
+            const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
+              body: { isin: symbol },
+            });
+            if (fallbackData?.ticker) {
+              nextState[symbol] = { status: "resolved" };
+              setTickerResolutions((prev) => {
+                if (prev[symbol]?.trim()) return prev;
+                return { ...prev, [symbol]: formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || "")) };
+              });
+              continue;
+            }
             nextState[symbol] = { status: "invalid", reason: "suggestion request failed" };
             continue;
           }
@@ -429,7 +467,19 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", {
           body: { mode: "suggest", isin: item.isin, name: item.name, mic: item.mic },
         });
-        if (error || !active) continue;
+        if (error || !active) {
+          const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
+            body: { isin: item.isin },
+          });
+          if (!active || !fallbackData?.ticker) continue;
+          const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
+          setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
+          setTickerResolutions((prev) => {
+            if (prev[item.isin]?.trim()) return prev;
+            return { ...prev, [item.isin]: formatted };
+          });
+          continue;
+        }
 
         const symbols = ((data?.suggestions || []) as any[])
           .map((x) => {
@@ -447,6 +497,17 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           setTickerResolutions((prev) => {
             if (prev[item.isin]?.trim()) return prev;
             return { ...prev, [item.isin]: normalizeTicker(String(data.suggested)) };
+          });
+        } else if (symbols.length === 0) {
+          const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
+            body: { isin: item.isin },
+          });
+          if (!fallbackData?.ticker) continue;
+          const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
+          setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
+          setTickerResolutions((prev) => {
+            if (prev[item.isin]?.trim()) return prev;
+            return { ...prev, [item.isin]: formatted };
           });
         }
       }
