@@ -37,6 +37,11 @@ export interface NordeaAccountGroup {
   baseCurrency: string;
 }
 
+interface NordeaSheetMatch {
+  sheetName: string;
+  headerRowIndex: number;
+}
+
 export function convertCurrency(amount: number, from: string, to: string): { value: number; converted: boolean } {
   if (from === to) return { value: amount, converted: true };
   const rate = FX_RATES[from]?.[to];
@@ -120,10 +125,10 @@ export function parseJSONImport(text: string): { portfolio?: any; holdings: any[
 
 function normalizeNordeaRow(row: Record<string, unknown>) {
   const isin = String(row.ISIN ?? "").trim();
-  const quantity = Number(row.HOLDINGS);
-  const avgCost = Number(row["Average purchase price"]);
+  const quantity = parseNordeaNumber(row.HOLDINGS);
+  const avgCost = parseNordeaNumber(row["Average purchase price"]);
   const baseCurrency = String(row["Base currency"] ?? "").trim().toUpperCase() || "SEK";
-  const price = Number(row.PRICE);
+  const price = parseNordeaNumber(row.PRICE);
   const accountKey = String(row.AccountKey ?? "").trim();
 
   return {
@@ -144,6 +149,15 @@ function normalizeNordeaRow(row: Record<string, unknown>) {
   };
 }
 
+function parseNordeaNumber(value: unknown): number {
+  if (typeof value === "number") return value;
+  const text = String(value ?? "").trim();
+  if (!text) return NaN;
+  const normalized = text.replace(/\s/g, "").replace(/\./g, "").replace(/,/g, ".");
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : NaN;
+}
+
 export function groupNordeaHoldingsByAccount(rows: Array<Record<string, unknown>>): NordeaAccountGroup[] {
   const byAccount = new Map<string, NordeaAccountGroup>();
 
@@ -160,8 +174,8 @@ export function groupNordeaHoldingsByAccount(rows: Array<Record<string, unknown>
     };
 
     current.holdingsCount += 1;
-    const holdings = Number(row.HOLDINGS);
-    const price = Number(row.PRICE);
+    const holdings = parseNordeaNumber(row.HOLDINGS);
+    const price = parseNordeaNumber(row.PRICE);
     if (Number.isFinite(holdings) && Number.isFinite(price)) {
       current.marketValueBase = (current.marketValueBase ?? 0) + holdings * price;
     }
@@ -175,27 +189,43 @@ export function groupNordeaHoldingsByAccount(rows: Array<Record<string, unknown>
   }));
 }
 
+function findNordeaHoldingsSheet(workbook: XLSX.WorkBook): NordeaSheetMatch | null {
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const rows = XLSX.utils.sheet_to_json<Array<string | undefined>>(sheet, {
+      header: 1,
+      blankrows: false,
+      defval: "",
+    });
+
+    for (let index = 0; index < Math.min(5, rows.length); index += 1) {
+      const headerRow = rows[index] ?? [];
+      const hasIsin = headerRow.some((cell) => String(cell).trim() === "ISIN");
+      const hasAccountKey = headerRow.some((cell) => String(cell).trim() === "AccountKey");
+      const hasType = headerRow.some((cell) => String(cell).trim() === "Type");
+      if (hasIsin && hasAccountKey && hasType) {
+        return { sheetName, headerRowIndex: index };
+      }
+    }
+  }
+
+  return null;
+}
+
 export function detectNordeaHoldingsFormat(workbook: XLSX.WorkBook): boolean {
-  const sheet = workbook.Sheets.Holdings;
-  if (!sheet) return false;
-  const rows = XLSX.utils.sheet_to_json<Array<string | undefined>>(sheet, {
-    header: 1,
-    blankrows: false,
-    defval: "",
-  });
-  const headerRow = rows[1] ?? [];
-  return headerRow.some((cell) => String(cell).trim() === "ISIN")
-    && headerRow.some((cell) => String(cell).trim() === "AccountKey");
+  return findNordeaHoldingsSheet(workbook) !== null;
 }
 
 export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport {
   const workbook = XLSX.read(fileData, { type: "array" });
-  const detectedNordea = detectNordeaHoldingsFormat(workbook);
+  const nordeaMatch = findNordeaHoldingsSheet(workbook);
+  const detectedNordea = nordeaMatch !== null;
 
-  if (detectedNordea) {
-    const sheet = workbook.Sheets.Holdings;
+  if (nordeaMatch) {
+    const sheet = workbook.Sheets[nordeaMatch.sheetName];
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-      range: 1,
+      range: nordeaMatch.headerRowIndex,
       defval: null,
       raw: true,
     });
@@ -203,14 +233,14 @@ export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport
     const filteredRows = rows
       .filter((row) => String(row.Type ?? "").trim() === "Custody")
       .filter((row) => row.ISIN !== null && String(row.ISIN ?? "").trim() !== "")
-      .filter((row) => Number.isFinite(Number(row.HOLDINGS)) && Number(row.HOLDINGS) > 0)
+      .filter((row) => Number.isFinite(parseNordeaNumber(row.HOLDINGS)) && parseNordeaNumber(row.HOLDINGS) > 0)
       .filter((row) => String(row.NAME ?? "").trim() !== "")
       .map(normalizeNordeaRow);
 
     const nordeaAccounts = groupNordeaHoldingsByAccount(rows
       .filter((row) => String(row.Type ?? "").trim() === "Custody")
       .filter((row) => row.ISIN !== null && String(row.ISIN ?? "").trim() !== "")
-      .filter((row) => Number.isFinite(Number(row.HOLDINGS)) && Number(row.HOLDINGS) > 0)
+      .filter((row) => Number.isFinite(parseNordeaNumber(row.HOLDINGS)) && parseNordeaNumber(row.HOLDINGS) > 0)
       .filter((row) => String(row.NAME ?? "").trim() !== ""));
 
     const firstBaseCurrency = rows
