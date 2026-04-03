@@ -33,7 +33,7 @@ exposure_by_metal AS (
   GROUP BY 1
 ),
 exposure_by_jurisdiction AS (
-  SELECT COALESCE(NULLIF(mcp.primary_jurisdiction, ''), 'Unknown') AS name,
+  SELECT COALESCE(NULLIF(mcp.jurisdiction, ''), 'Unknown') AS name,
          SUM(h.quantity * COALESCE(alp.price, h.avg_cost, 0)) AS value
   FROM public.holdings h
   JOIN public.assets a ON a.id = h.asset_id
@@ -57,7 +57,7 @@ holdings_view AS (
     COALESCE(NULLIF(a.name, ''), a.symbol) AS name,
     COALESCE(mcp.stage::text, 'explorer') AS stage,
     COALESCE(NULLIF(mcp.primary_metal, ''), 'Other') AS metal,
-    COALESCE(NULLIF(mcp.primary_jurisdiction, ''), 'Unknown') AS jurisdiction,
+    COALESCE(NULLIF(mcp.jurisdiction, ''), 'Unknown') AS jurisdiction,
     (h.quantity * COALESCE(alp.price, h.avg_cost, 0))::numeric AS position_value,
     CASE
       WHEN lv.total_value IS NULL OR lv.total_value = 0 THEN 0
