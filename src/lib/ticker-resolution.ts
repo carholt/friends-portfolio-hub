@@ -4,9 +4,21 @@ export interface TickerResolutionInput {
   exchange?: string;
 }
 
-const CANADIAN_MIC_TO_EXCHANGE: Record<string, string> = {
+const MIC_TO_EXCHANGE: Record<string, string> = {
+  XNAS: "NASDAQ",
+  XNYS: "NYSE",
+  XASE: "AMEX",
+  ARCX: "NYSEARCA",
+  BATS: "BATS",
   XTSE: "TSX",
   XTSX: "TSXV",
+  XSTO: "STO",
+  XHEL: "HEL",
+  XCSE: "CSE",
+  XOSL: "OSL",
+  XFRA: "FRA",
+  XETR: "XETRA",
+  XLON: "LSE",
 };
 
 export interface AssetLike {
@@ -41,7 +53,7 @@ export function normalizeExchangeCode(value?: string | null): string | null {
 export function exchangeFromMic(value?: string | null): string | null {
   const mic = normalizeExchangeCode(value);
   if (!mic) return null;
-  return CANADIAN_MIC_TO_EXCHANGE[mic] || mic;
+  return MIC_TO_EXCHANGE[mic] || mic;
 }
 
 export function buildProviderSymbol(symbol: string, exchange?: string | null): string {

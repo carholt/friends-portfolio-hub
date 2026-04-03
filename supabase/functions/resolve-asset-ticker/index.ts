@@ -17,7 +17,81 @@ type Resolution = {
 
 const normalize = (v: string) => v.trim().toUpperCase();
 const normalizeExchange = (v?: string | null) => (v || "").trim().toUpperCase() || null;
-const micToExchange: Record<string, string> = { XTSE: "TSX", XTSX: "TSXV" };
+const normalizeName = (value: string) => value
+  .toUpperCase()
+  .replace(/&/g, " AND ")
+  .replace(/[^A-Z0-9\s]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+type CuratedSymbol = {
+  symbol: string;
+  exchange: string;
+  company: string;
+  aliases?: string[];
+};
+
+const CURATED_SYMBOLS: CuratedSymbol[] = [
+  { symbol: "USA", exchange: "TSX", company: "Americas Gold & Silver", aliases: ["USAS", "AMERICAS GOLD SILVER"] },
+  { symbol: "ASM", exchange: "TSX", company: "Avino Silver & Gold", aliases: ["AVINO SILVER"] },
+  { symbol: "AYA", exchange: "TSX", company: "Aya Gold & Silver", aliases: ["AYA GOLD SILVER INC"] },
+  { symbol: "CDE", exchange: "NYSE", company: "Coeur Mining" },
+  { symbol: "EXK", exchange: "TSX", company: "Endeavour Silver" },
+  { symbol: "AG", exchange: "NYSE", company: "First Majestic Silver", aliases: ["FIRST MAJESTIC"] },
+  { symbol: "GIAG", exchange: "TSXV", company: "Guanajuato Silver", aliases: ["GUANAJUATO SILVER COMPANY", "GSVR"] },
+  { symbol: "HL", exchange: "NYSE", company: "Hecla Mining", aliases: ["HE"] },
+  { symbol: "JAG", exchange: "TSX", company: "Jaguar Mining" },
+  { symbol: "PAAS", exchange: "TSX", company: "Pan American Silver" },
+  { symbol: "AGX", exchange: "TSXV", company: "Silver X Mining", aliases: ["SILVER X MINING CORP"] },
+  { symbol: "TSK", exchange: "TSXV", company: "Talisker Resources", aliases: ["TALISKER"] },
+  { symbol: "ARIS", exchange: "TSX", company: "Aris Mining" },
+  { symbol: "ARTG", exchange: "TSXV", company: "Artemis Gold" },
+  { symbol: "BTO", exchange: "TSX", company: "B2Gold", aliases: ["BTG"] },
+  { symbol: "CERT", exchange: "TSXV", company: "Cerrado Gold" },
+  { symbol: "DMET", exchange: "TSXV", company: "Denarius Metals" },
+  { symbol: "DSV", exchange: "TSX", company: "Discovery Silver" },
+  { symbol: "EDV", exchange: "TSX", company: "Endeavour Mining" },
+  { symbol: "EQX", exchange: "TSX", company: "Equinox Gold" },
+  { symbol: "FRES", exchange: "LSE", company: "Fresnillo" },
+  { symbol: "GAU", exchange: "TSX", company: "Galiano Gold" },
+  { symbol: "GGD", exchange: "TSX", company: "Gogold Resources" },
+  { symbol: "HOC", exchange: "LSE", company: "Hochschild Mining" },
+  { symbol: "ITR", exchange: "TSXV", company: "Integra Resources" },
+  { symbol: "SCZ", exchange: "TSXV", company: "Santacruz Silver", aliases: ["SOURTHERN SILVER", "SSV"] },
+  { symbol: "VLT", exchange: "TSXV", company: "Vault Minerals" },
+  { symbol: "WRLG", exchange: "TSXV", company: "West Red Lake Gold" },
+  { symbol: "FVL", exchange: "TSXV", company: "Freegold Ventures" },
+  { symbol: "AUMB", exchange: "TSXV", company: "1911 Gold", aliases: ["1911"] },
+  { symbol: "LG", exchange: "TSXV", company: "Lahontan Gold", aliases: ["LG"] },
+  { symbol: "NEXG", exchange: "CSE", company: "NexGold Mining", aliases: ["NEXGOLD MINING"] },
+  { symbol: "PZG", exchange: "TSXV", company: "P2 Gold" },
+  { symbol: "VZLA", exchange: "TSXV", company: "Vizsla Silver" },
+  { symbol: "NOM", exchange: "TSXV", company: "Norsemont Mining" },
+  { symbol: "RVG", exchange: "TSXV", company: "Revival Gold" },
+  { symbol: "SVRS", exchange: "TSXV", company: "Silver Storm" },
+  { symbol: "SLVR", exchange: "TSXV", company: "Silver Tiger" },
+  { symbol: "SKE", exchange: "TSX", company: "Skeena Gold" },
+  { symbol: "B", exchange: "NYSE", company: "Barrick Mining", aliases: ["BARRICK GOLD"] },
+  { symbol: "KGC", exchange: "NYSE", company: "Kinross Gold" },
+  { symbol: "NEM", exchange: "NYSE", company: "Newmont" },
+];
+const micToExchange: Record<string, string> = {
+  XNAS: "NASDAQ",
+  XNYS: "NYSE",
+  XASE: "AMEX",
+  ARCX: "NYSEARCA",
+  BATS: "BATS",
+  XTSE: "TSX",
+  XTSX: "TSXV",
+  XSTO: "STO",
+  XHEL: "HEL",
+  XCSE: "CSE",
+  XOSL: "OSL",
+  XFRA: "FRA",
+  XETR: "XETRA",
+  XLON: "LSE",
+};
+const suggestionCache = new Map<string, { suggested: string; suggestions: Record<string, unknown>[] }>();
 const providerSymbol = (ticker: string, exchange?: string | null) => {
   const cleanExchange = normalizeExchange(exchange);
   return cleanExchange ? `${normalize(ticker)}:${cleanExchange}` : normalize(ticker);
@@ -31,26 +105,75 @@ const exchangeFromSuggestion = (item: Record<string, unknown>) => {
   return mic;
 };
 
-async function suggestTicker(apiKey: string, isin: string, name: string) {
-  const normalizeName = (value: string) => value
-    .toUpperCase()
-    .replace(/&/g, " AND ")
-    .replace(/[^A-Z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const scoreNameMatch = (needle: string, candidate: string) => {
-    const n = normalizeName(needle);
-    const c = normalizeName(candidate);
-    if (!n || !c) return 0;
-    if (n === c) return 100;
-    if (c.includes(n) || n.includes(c)) return 80;
+const normalizeSuggestions = (
+  suggestions: Record<string, unknown>[],
+  preferredExchange: string | null,
+) => {
+  const normalized = suggestions
+    .slice(0, 12)
+    .map((entry) => ({
+      ...entry,
+      exchange_code: exchangeFromSuggestion(entry),
+    }));
 
-    const nTokens = n.split(" ").filter((token) => token.length > 1);
-    const cTokens = new Set(c.split(" ").filter((token) => token.length > 1));
-    if (nTokens.length === 0 || cTokens.size === 0) return 0;
-    const overlap = nTokens.filter((token) => cTokens.has(token)).length;
-    return Math.round((overlap / Math.max(nTokens.length, cTokens.size)) * 70);
-  };
+  if (!preferredExchange) return normalized;
+
+  return normalized.sort((a, b) => {
+    const aExchange = normalizeExchange(String(a.exchange_code || ""));
+    const bExchange = normalizeExchange(String(b.exchange_code || ""));
+    const aMatch = aExchange === preferredExchange ? 1 : 0;
+    const bMatch = bExchange === preferredExchange ? 1 : 0;
+    if (aMatch !== bMatch) return bMatch - aMatch;
+    return 0;
+  });
+};
+
+const scoreNameMatch = (needle: string, candidate: string) => {
+  const n = normalizeName(needle);
+  const c = normalizeName(candidate);
+  if (!n || !c) return 0;
+  if (n === c) return 100;
+  if (c.includes(n) || n.includes(c)) return 85;
+  const nTokens = n.split(" ").filter((token) => token.length > 1);
+  const cTokens = new Set(c.split(" ").filter((token) => token.length > 1));
+  if (nTokens.length === 0 || cTokens.size === 0) return 0;
+  const overlap = nTokens.filter((token) => cTokens.has(token)).length;
+  return Math.round((overlap / Math.max(nTokens.length, cTokens.size)) * 70);
+};
+
+const curatedMatchesByName = (name: string, preferredExchange: string | null) => {
+  const needle = normalizeName(name);
+  if (!needle) return [];
+  const scored = CURATED_SYMBOLS.map((item) => {
+    const names = [item.company, ...(item.aliases || [])];
+    const bestScore = Math.max(...names.map((candidate) => scoreNameMatch(needle, candidate)));
+    const preferredBonus = preferredExchange && normalizeExchange(item.exchange) === preferredExchange ? 30 : 0;
+    return {
+      symbol: item.symbol,
+      name: item.company,
+      exchange_code: item.exchange,
+      score: bestScore + preferredBonus,
+      source: "curated_catalog",
+    };
+  }).filter((item) => item.score >= 65)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+  return scored;
+};
+
+async function suggestTicker(apiKey: string, isin: string, name: string, mic?: string | null) {
+  const preferredExchange = normalizeExchange(mic ? micToExchange[normalize(mic)] || mic : null);
+  const cacheKey = [isin, preferredExchange || "", normalize(name)].join("|");
+  const cached = suggestionCache.get(cacheKey);
+  if (cached) return cached;
+
+  const curatedMatches = curatedMatchesByName(name, preferredExchange);
+  if (curatedMatches.length > 0) {
+    const first = curatedMatches[0];
+    const curatedResult = { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: curatedMatches.slice(0, 3) };
+    suggestionCache.set(cacheKey, curatedResult);
+    return curatedResult;
+  }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -76,30 +199,30 @@ async function suggestTicker(apiKey: string, isin: string, name: string) {
     .slice(0, 3);
   if (localMatches.length > 0) {
     const first = localMatches[0];
-    return { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: localMatches };
+    const localResult = { suggested: providerSymbol(first.symbol, first.exchange_code), suggestions: localMatches };
+    suggestionCache.set(cacheKey, localResult);
+    return localResult;
   }
 
   const byIsin = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(isin)}&apikey=${apiKey}`);
   const isinPayload = await byIsin.json();
   const isinData = Array.isArray(isinPayload?.data) ? isinPayload.data : [];
   if (isinData.length > 0) {
-    const normalized = isinData.slice(0, 6).map((entry: Record<string, unknown>) => ({
-      ...entry,
-      exchange_code: exchangeFromSuggestion(entry),
-    }));
+    const normalized = normalizeSuggestions(isinData, preferredExchange);
     const first = normalized[0];
-    return { suggested: providerSymbol(String(first.symbol || ""), String(first.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+    const isinResult = { suggested: providerSymbol(String(first.symbol || ""), String(first.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+    suggestionCache.set(cacheKey, isinResult);
+    return isinResult;
   }
 
   const byName = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(name)}&apikey=${apiKey}`);
   const namePayload = await byName.json();
   const nameData = Array.isArray(namePayload?.data) ? namePayload.data : [];
-  const normalized = nameData.slice(0, 6).map((entry: Record<string, unknown>) => ({
-    ...entry,
-    exchange_code: exchangeFromSuggestion(entry),
-  }));
+  const normalized = normalizeSuggestions(nameData, preferredExchange);
   const first = normalized[0];
-  return { suggested: providerSymbol(String(first?.symbol || ""), String(first?.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+  const nameResult = { suggested: providerSymbol(String(first?.symbol || ""), String(first?.exchange_code || "")), suggestions: normalized.slice(0, 3) };
+  suggestionCache.set(cacheKey, nameResult);
+  return nameResult;
 }
 
 Deno.serve(async (req) => {
@@ -122,8 +245,9 @@ Deno.serve(async (req) => {
     if (payload.mode === "suggest") {
       const isin = normalize(String(payload.isin || ""));
       const name = String(payload.name || "").trim();
+      const mic = String(payload.mic || "").trim();
       if (!isin) return new Response(JSON.stringify({ error: "isin required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      const result = await suggestTicker(twelveKey, isin, name || isin);
+      const result = await suggestTicker(twelveKey, isin, name || isin, mic || null);
       return new Response(JSON.stringify(result), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
