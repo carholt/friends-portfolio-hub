@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const sql = readFileSync(
-  resolve(process.cwd(), "supabase/migrations/20260314090000_global_price_cache_and_symbol_overrides.sql"),
+  resolve(process.cwd(), "supabase/migrations/20260404000000_consolidated_schema.sql"),
   "utf8",
 );
 

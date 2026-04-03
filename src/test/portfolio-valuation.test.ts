@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 describe("global price valuation SQL", () => {
   const sql = readFileSync(
-    resolve(process.cwd(), "supabase/migrations/20260314090000_global_price_cache_and_symbol_overrides.sql"),
+    resolve(process.cwd(), "supabase/migrations/20260404000000_consolidated_schema.sql"),
     "utf8",
   );
 
