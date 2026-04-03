@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
+import { validatePurchaseRedirectUrl } from "./url-validation.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -62,6 +63,28 @@ Deno.serve(async (req) => {
       });
     }
 
+    const redirectValidationOptions = {
+      appOrigin: Deno.env.get("APP_ORIGIN"),
+      appAllowedOrigins: Deno.env.get("APP_ALLOWED_ORIGINS"),
+      appAllowedPurchasePathPrefixes: Deno.env.get("APP_ALLOWED_PURCHASE_PATH_PREFIXES"),
+    };
+
+    const validatedSuccessUrl = validatePurchaseRedirectUrl(success_url, redirectValidationOptions);
+    if (!validatedSuccessUrl.ok) {
+      return new Response(JSON.stringify({ error: `Invalid success_url: ${validatedSuccessUrl.error}` }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const validatedCancelUrl = validatePurchaseRedirectUrl(cancel_url, redirectValidationOptions);
+    if (!validatedCancelUrl.ok) {
+      return new Response(JSON.stringify({ error: `Invalid cancel_url: ${validatedCancelUrl.error}` }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const { data: report, error: reportError } = await adminClient
       .from("company_ai_reports")
       .select("id,asset_id,status")
@@ -83,8 +106,8 @@ Deno.serve(async (req) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      success_url,
-      cancel_url,
+      success_url: validatedSuccessUrl.normalizedUrl,
+      cancel_url: validatedCancelUrl.normalizedUrl,
       payment_method_types: ["card"],
       metadata: {
         report_id,
