@@ -29,6 +29,7 @@ interface AccountSelection {
 }
 
 interface ResolverItem { isin: string; name: string; mic?: string; }
+type ResolverStatus = "resolving" | "resolved" | "manual_required";
 
 interface ImportSummary { inserted: number; updated: number; skipped: number; errors: number; }
 
@@ -55,6 +56,9 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   const [accountSelections, setAccountSelections] = useState<Record<string, AccountSelection>>({});
   const [tickerResolutions, setTickerResolutions] = useState<Record<string, string>>({});
   const [tickerSuggestions, setTickerSuggestions] = useState<Record<string, string[]>>({});
+  const [resolverStatus, setResolverStatus] = useState<Record<string, ResolverStatus>>({});
+  const [resolverErrors, setResolverErrors] = useState<Record<string, string>>({});
+  const [allowManualNordeaImport, setAllowManualNordeaImport] = useState(false);
   const [previewResolution, setPreviewResolution] = useState<Record<string, { status: SymbolResolutionStatus; reason?: string }>>({});
   const [importManualInvalid, setImportManualInvalid] = useState(false);
   const [importWarning, setImportWarning] = useState<string | null>(null);
@@ -95,53 +99,39 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     setTickerResolutions(defaults);
   }, [detectedNordea, resolverItems]);
 
+  const resolveViaApi = useCallback(async (isin: string) => {
+    const response = await fetch("/api/resolve-isin", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ isin }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      return { ticker: null, error: data?.error || "lookup_failed", exchange: null };
+    }
+    return data;
+  }, []);
+
+  const retryResolve = useCallback(async (isin: string) => {
+    setResolverStatus((prev) => ({ ...prev, [isin]: "resolving" }));
+    setResolverErrors((prev) => ({ ...prev, [isin]: "" }));
+    const result = await resolveViaApi(isin);
+    if (result?.ticker) {
+      const formatted = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
+      setTickerResolutions((prev) => ({ ...prev, [isin]: formatted }));
+      setTickerSuggestions((prev) => ({ ...prev, [isin]: [formatted] }));
+      setResolverStatus((prev) => ({ ...prev, [isin]: "resolved" }));
+      return;
+    }
+
+    setResolverStatus((prev) => ({ ...prev, [isin]: "manual_required" }));
+    setResolverErrors((prev) => ({ ...prev, [isin]: String(result?.error || "unresolved") }));
+  }, [resolveViaApi]);
+
   const fetchSuggestion = async (item: ResolverItem) => {
-    const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", { body: { mode: "suggest", isin: item.isin, name: item.name, mic: item.mic } });
-    if (error) {
-      const { data: fallbackData, error: fallbackError } = await supabase.functions.invoke("resolve-isin", {
-        body: { isin: item.isin },
-      });
-      if (fallbackError || !fallbackData?.ticker) {
-        toast.error(`No suggestions for ${item.isin}`);
-        return;
-      }
-      const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
-      setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
-      setTickerResolutions((prev) => ({ ...prev, [item.isin]: formatted }));
-      return;
-    }
-
-    const symbols = ((data?.suggestions || []) as any[])
-      .map((x) => {
-        const symbol = String(x.symbol || "").toUpperCase().trim();
-        const exchange = String(x.exchange_code || x.exchange || "").toUpperCase().trim();
-        if (!symbol) return "";
-        return exchange ? `${symbol}:${exchange}` : symbol;
-      })
-      .filter(Boolean)
-      .slice(0, 3);
-
-    setTickerSuggestions((prev) => ({ ...prev, [item.isin]: symbols }));
-
-    if (data?.suggested) {
-      setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(String(data.suggested)) }));
-      return;
-    }
-
-    if (symbols[0]) {
-      setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(symbols[0]) }));
-    } else {
-      const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
-        body: { isin: item.isin },
-      });
-      if (fallbackData?.ticker) {
-        const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
-        setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
-        setTickerResolutions((prev) => ({ ...prev, [item.isin]: formatted }));
-      } else {
-        toast.error(`No suggestions for ${item.isin}`);
-      }
-    }
+    await retryResolve(item.isin);
   };
 
   const defaultImportSummary: ImportSummary = { inserted: 0, updated: 0, skipped: 0, errors: 0 };
@@ -172,6 +162,9 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     setAccountSelections({});
     setTickerResolutions({});
     setTickerSuggestions({});
+    setResolverStatus({});
+    setResolverErrors({});
+    setAllowManualNordeaImport(false);
     setPreviewResolution({});
     setImportWarning(null);
     setDetectedColumns([]);
@@ -352,8 +345,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
       }
 
       const unresolved = resolverItems.some((item) => !tickerResolutions[item.isin]?.trim());
-      if (unresolved) {
-        toast.error("Please resolve all Nordea ISINs to tickers before importing.");
+      if (unresolved && !allowManualNordeaImport) {
+        toast.error("Some ISINs are unresolved. Resolve them or confirm manual import for unresolved rows.");
         return;
       }
 
@@ -453,74 +446,46 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   ), [resolverItems, tickerResolutions]);
 
   useEffect(() => {
-    if (!detectedNordea || resolverItems.length === 0) return;
+    if (!detectedNordea || step !== 5 || resolverItems.length === 0) return;
 
     let active = true;
-    const queue = resolverItems.filter((item) => !(item.isin in tickerSuggestions));
-    if (queue.length === 0) return;
-
-    const workers = Array.from({ length: Math.min(4, queue.length) }).map(async () => {
-      while (queue.length && active) {
-        const item = queue.shift();
-        if (!item) break;
-
-        const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", {
-          body: { mode: "suggest", isin: item.isin, name: item.name, mic: item.mic },
-        });
-        if (error || !active) {
-          const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
-            body: { isin: item.isin },
-          });
-          if (!active || !fallbackData?.ticker) continue;
-          const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
-          setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
-          setTickerResolutions((prev) => {
-            if (prev[item.isin]?.trim()) return prev;
-            return { ...prev, [item.isin]: formatted };
-          });
-          continue;
+    const runPass = async () => {
+      await Promise.all(resolverItems.map(async (item) => {
+        const existingTicker = tickerResolutions[item.isin]?.trim();
+        if (existingTicker) {
+          if (!active) return;
+          setResolverStatus((prev) => ({ ...prev, [item.isin]: "resolved" }));
+          setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [existingTicker] }));
+          return;
         }
 
-        const symbols = ((data?.suggestions || []) as any[])
-          .map((x) => {
-            const symbol = String(x.symbol || "").toUpperCase().trim();
-            const exchange = String(x.exchange_code || x.exchange || "").toUpperCase().trim();
-            if (!symbol) return "";
-            return exchange ? `${symbol}:${exchange}` : symbol;
-          })
-          .filter(Boolean)
-          .slice(0, 3);
+        if (!active) return;
+        setResolverStatus((prev) => ({ ...prev, [item.isin]: "resolving" }));
+        setResolverErrors((prev) => ({ ...prev, [item.isin]: "" }));
+        const result = await resolveViaApi(item.isin);
+        if (!active) return;
 
-        setTickerSuggestions((prev) => ({ ...prev, [item.isin]: symbols }));
-
-        if (data?.suggested) {
-          setTickerResolutions((prev) => {
-            if (prev[item.isin]?.trim()) return prev;
-            return { ...prev, [item.isin]: normalizeTicker(String(data.suggested)) };
-          });
-        } else if (symbols.length === 0) {
-          const { data: fallbackData } = await supabase.functions.invoke("resolve-isin", {
-            body: { isin: item.isin },
-          });
-          if (!fallbackData?.ticker) continue;
-          const formatted = formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""));
+        if (result?.ticker) {
+          const formatted = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
+          setTickerResolutions((prev) => ({ ...prev, [item.isin]: formatted }));
           setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [formatted] }));
-          setTickerResolutions((prev) => {
-            if (prev[item.isin]?.trim()) return prev;
-            return { ...prev, [item.isin]: formatted };
-          });
+          setResolverStatus((prev) => ({ ...prev, [item.isin]: "resolved" }));
+          return;
         }
-      }
-    });
 
-    Promise.all(workers).catch(() => {
-      // no-op: keep manual "Suggest" action as fallback
+        setResolverStatus((prev) => ({ ...prev, [item.isin]: "manual_required" }));
+        setResolverErrors((prev) => ({ ...prev, [item.isin]: String(result?.error || "unresolved") }));
+      }));
+    };
+
+    runPass().catch(() => {
+      // non-blocking: row-level status/error is set on each request path
     });
 
     return () => {
       active = false;
     };
-  }, [detectedNordea, resolverItems, tickerSuggestions]);
+  }, [detectedNordea, resolverItems, resolveViaApi, step, tickerResolutions]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetImport(); }}>
@@ -585,10 +550,66 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
         {detectedNordea && step === 5 && <div className="space-y-3">
           <p className="text-sm font-medium">Resolve tickers ({nordeaResolvedCount}/{resolverItems.length} mapped)</p>
-          <Table><TableHeader><TableRow><TableHead>Name / ISIN</TableHead><TableHead>Ticker (required)</TableHead><TableHead>Suggestions</TableHead></TableRow></TableHeader><TableBody>
-            {resolverItems.map((item) => <TableRow key={item.isin}><TableCell><div className="font-medium">{item.name}</div><div className="text-xs text-muted-foreground">{item.isin}</div></TableCell><TableCell><Input value={tickerResolutions[item.isin] || ""} onChange={(e) => setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(e.target.value) }))} placeholder="e.g. AAPL" /></TableCell><TableCell><div className="flex gap-2 items-center"><Button variant="outline" size="sm" onClick={() => fetchSuggestion(item)}>Suggest</Button><div className="text-xs">{(tickerSuggestions[item.isin] || []).join(", ") || "No suggestions yet"}</div></div></TableCell></TableRow>)}
+          <Table><TableHeader><TableRow><TableHead>Name / ISIN</TableHead><TableHead>Status</TableHead><TableHead>Ticker (required)</TableHead><TableHead>Suggestions</TableHead></TableRow></TableHeader><TableBody>
+            {resolverItems.map((item) => {
+              const status = resolverStatus[item.isin] || "resolving";
+              const value = tickerResolutions[item.isin] || "";
+              const isResolved = Boolean(value.trim());
+              return (
+                <TableRow key={item.isin}>
+                  <TableCell>
+                    <div className="font-medium">{item.name}</div>
+                    <div className="text-xs text-muted-foreground">{item.isin}</div>
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {status === "resolved" || isResolved ? "✅ resolved" : status === "manual_required" ? "⚠ manual_required" : "⏳ resolving"}
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      value={value}
+                      onChange={(e) => {
+                        const next = normalizeTicker(e.target.value);
+                        setTickerResolutions((prev) => ({ ...prev, [item.isin]: next }));
+                        setResolverStatus((prev) => ({ ...prev, [item.isin]: next ? "resolved" : "manual_required" }));
+                      }}
+                      placeholder="e.g. AAPL"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-2 items-center">
+                      <Button variant="outline" size="sm" onClick={() => fetchSuggestion(item)}>Suggest</Button>
+                      {status === "resolving" ? (
+                        <div className="text-xs">Resolving...</div>
+                      ) : isResolved ? (
+                        <div className="text-xs">{(tickerSuggestions[item.isin] || [value]).join(", ")}</div>
+                      ) : (
+                        <div className="text-xs">
+                          No market data found{resolverErrors[item.isin] ? ` (${resolverErrors[item.isin]})` : ""}
+                        </div>
+                      )}
+                      {status === "manual_required" && (
+                        <Button variant="ghost" size="sm" onClick={() => retryResolve(item.isin)}>Retry</Button>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody></Table>
-          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(4)}>Back</Button><Button onClick={() => setStep(6)} disabled={!allResolved}>Continue</Button></div>
+          {!allResolved && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={allowManualNordeaImport}
+                onChange={(e) => setAllowManualNordeaImport(e.target.checked)}
+              />
+              Continue with manual import for unresolved rows
+            </label>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setStep(4)}>Back</Button>
+            <Button onClick={() => setStep(6)} disabled={!allResolved && !allowManualNordeaImport}>Continue</Button>
+          </div>
         </div>}
 
         {((!detectedNordea && step === 4) || (detectedNordea && step === 6)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p>{lastImportSummary && <p className="text-xs text-muted-foreground">Last import summary: {lastImportSummary.inserted} inserted · {lastImportSummary.updated} updated · {lastImportSummary.skipped} skipped · {lastImportSummary.errors} errors</p>}<div className="flex gap-2"><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
