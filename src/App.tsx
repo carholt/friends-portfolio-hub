@@ -24,6 +24,7 @@ import ComparePage from "./pages/Compare";
 import IdeasPage from "./pages/Ideas";
 import AssetCompanyPage from "./pages/AssetCompany";
 import SymbolResolutionSettingsPage from "./pages/SymbolResolutionSettings";
+import AdminPage from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 import { envError } from "@/config/env";
 import { ErrorState } from "@/components/feedback/ErrorState";
@@ -75,6 +76,7 @@ const App = () => {
                 <Route path="/groups" element={<Groups />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/settings/symbol-resolution" element={<SymbolResolutionSettingsPage />} />
+                <Route path="/admin" element={<AdminPage />} />
                 <Route path="/friends" element={<FriendsPage />} />
                 <Route path="/compare" element={<ComparePage />} />
                 <Route path="/ideas" element={<IdeasPage />} />

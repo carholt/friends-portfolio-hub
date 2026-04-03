@@ -20,6 +20,10 @@ export const env = {
   supabaseUrl: getEnvVar(import.meta.env as EnvLike, "VITE_SUPABASE_URL"),
   supabaseAnonKey: getEnvVar(import.meta.env as EnvLike, "VITE_SUPABASE_PUBLISHABLE_KEY"),
   paywallEnabled: String(import.meta.env.VITE_PAYWALL_ENABLED || "false").toLowerCase() === "true",
+  adminEmails: String(import.meta.env.VITE_ADMIN_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
 };
 
 export const envError = getEnvError(import.meta.env as EnvLike);

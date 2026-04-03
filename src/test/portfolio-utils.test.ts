@@ -90,6 +90,30 @@ describe("import parsing", () => {
     });
   });
 
+  it("parses Nordea localized Swedish header variants", () => {
+    const rows = [
+      ["2026-04-03 13:31:48"],
+      ["Type", "Kontonyckel", "Konto", "ISIN", "Valuta", "Namn", "Antal", "Kurs", "Genomsnittligt anskaffningspris", "Basvaluta", "MIC"],
+      ["Custody", "A1", "Main", "CA82825J1093", "CAD", "Silver Storm Mining", "1213", "0,465", "0,603526", "SEK", "XTSX"],
+    ];
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, sheet, "Export");
+
+    const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const parsed = parseExcelImport(buffer);
+
+    expect(parsed.detectedNordea).toBe(true);
+    expect(parsed.holdings).toHaveLength(1);
+    expect(parsed.holdings[0]).toMatchObject({
+      symbol: "CA82825J1093",
+      account_key: "A1",
+      quantity: 1213,
+      avg_cost: 0.603526,
+      cost_currency: "CAD",
+    });
+  });
+
   it("groups Nordea custody rows by AccountKey", () => {
     const groups = groupNordeaHoldingsByAccount([
       { Type: "Custody", AccountKey: "A1", Account: "Main", ISIN: "US0378331005", NAME: "Apple", HOLDINGS: 3, PRICE: 180, "Base currency": "SEK" },

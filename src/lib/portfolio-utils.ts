@@ -42,6 +42,45 @@ interface NordeaSheetMatch {
   headerRowIndex: number;
 }
 
+const NORD_HEADER_ALIASES: Record<string, string> = {
+  type: "Type",
+  konto: "Account",
+  account: "Account",
+  accountkey: "AccountKey",
+  kontonyckel: "AccountKey",
+  isin: "ISIN",
+  namn: "NAME",
+  name: "NAME",
+  valuta: "CURRENCY",
+  currency: "CURRENCY",
+  holdings: "HOLDINGS",
+  antal: "HOLDINGS",
+  quantity: "HOLDINGS",
+  price: "PRICE",
+  kurs: "PRICE",
+  "averagepurchaseprice": "Average purchase price",
+  "average purchase price": "Average purchase price",
+  "genomsnittligtanskaffningspris": "Average purchase price",
+  "genomsnittligt anskaffningspris": "Average purchase price",
+  "basecurrency": "Base currency",
+  "base currency": "Base currency",
+  basvaluta: "Base currency",
+  mic: "MIC",
+};
+
+function canonicalNordeaHeader(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  const normalized = raw.toLowerCase().replace(/[\s_-]+/g, " ").replace(/\s/g, "");
+  return NORD_HEADER_ALIASES[normalized] || raw;
+}
+
+function canonicalizeNordeaRow(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.entries(row).reduce<Record<string, unknown>>((acc, [key, value]) => {
+    acc[canonicalNordeaHeader(key)] = value;
+    return acc;
+  }, {});
+}
+
 export function convertCurrency(amount: number, from: string, to: string): { value: number; converted: boolean } {
   if (from === to) return { value: amount, converted: true };
   const rate = FX_RATES[from]?.[to];
@@ -201,9 +240,10 @@ function findNordeaHoldingsSheet(workbook: XLSX.WorkBook): NordeaSheetMatch | nu
 
     for (let index = 0; index < Math.min(5, rows.length); index += 1) {
       const headerRow = rows[index] ?? [];
-      const hasIsin = headerRow.some((cell) => String(cell).trim() === "ISIN");
-      const hasAccountKey = headerRow.some((cell) => String(cell).trim() === "AccountKey");
-      const hasType = headerRow.some((cell) => String(cell).trim() === "Type");
+      const canonicalHeaders = headerRow.map((cell) => canonicalNordeaHeader(cell));
+      const hasIsin = canonicalHeaders.some((header) => header === "ISIN");
+      const hasAccountKey = canonicalHeaders.some((header) => header === "AccountKey");
+      const hasType = canonicalHeaders.some((header) => header === "Type");
       if (hasIsin && hasAccountKey && hasType) {
         return { sheetName, headerRowIndex: index };
       }
@@ -224,11 +264,12 @@ export function parseExcelImport(fileData: ArrayBuffer): ParsedSpreadsheetImport
 
   if (nordeaMatch) {
     const sheet = workbook.Sheets[nordeaMatch.sheetName];
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+    const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
       range: nordeaMatch.headerRowIndex,
       defval: null,
       raw: true,
     });
+    const rows = rawRows.map(canonicalizeNordeaRow);
 
     const filteredRows = rows
       .filter((row) => String(row.Type ?? "").trim() === "Custody")

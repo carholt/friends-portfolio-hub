@@ -44,6 +44,7 @@ Optional monetization/friends-mode variables:
 
 - `VITE_PAYWALL_ENABLED` (`false` by default). Controls whether the UI shows the report paywall.
 - `PAYWALL_ENABLED` (`false` by default). Controls Stripe checkout behavior in Edge Functions.
+- `VITE_ADMIN_EMAILS` (comma-separated emails). Enables the `/admin` page in UI for those accounts.
 
 ### Friends mode / live paywall switch
 
@@ -107,6 +108,18 @@ Apply to linked project:
 supabase login
 supabase link --project-ref <project-ref>
 supabase db push
+```
+
+For a brand-new database bootstrap in one run, use the consolidated file:
+
+```bash
+psql "$DATABASE_URL" -f supabase/bootstrap/00000000000000_full_schema.sql
+```
+
+Then insert your admin email so you can read global activity via RLS:
+
+```sql
+insert into public.admin_emails(email) values ('you@example.com') on conflict do nothing;
 ```
 
 ## 5) Supabase Edge Function deployment (`update-prices`)

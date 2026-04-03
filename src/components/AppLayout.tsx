@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Home, Briefcase, Trophy, Users, Settings, LogOut, UserPlus, GitCompareArrows, Lightbulb } from "lucide-react";
 import { useAppBootstrap } from "@/hooks/useAppBootstrap";
 import { DebugPanel } from "@/components/DebugPanel";
+import { isAdminEmail } from "@/lib/admin";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: Home },
@@ -31,6 +32,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   const appEnv = import.meta.env.MODE;
   const appVersion = import.meta.env.VITE_APP_VERSION || import.meta.env.VITE_COMMIT_HASH || "dev";
+  const adminItem = { to: "/admin", label: "Admin", icon: Settings };
+  const visibleNavItems = isAdminEmail(user?.email) ? [...navItems, adminItem] : navItems;
 
   return (
     <div className="min-h-screen bg-background">
@@ -43,7 +46,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             </Button>
           </div>
           <nav className="space-y-1 rounded-xl border bg-card p-2">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <Link key={item.to} to={item.to}>
                 <Button
                   variant={location.pathname.startsWith(item.to) ? "secondary" : "ghost"}
@@ -71,7 +74,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t bg-background/95 p-2 backdrop-blur md:hidden">
         <div className="grid grid-cols-4 gap-1">
-          {navItems.map((item) => (
+          {visibleNavItems.map((item) => (
             <Link key={item.to} to={item.to}>
               <Button
                 variant={location.pathname.startsWith(item.to) ? "secondary" : "ghost"}

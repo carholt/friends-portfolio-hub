@@ -55,8 +55,8 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
 
   const classifyFile = (headersToCheck: string[]) => {
     const lower = headersToCheck.map((header) => header.toLowerCase());
-    if (lower.some((header) => ["type", "price", "trade date", "trade_id", "fees"].some((needle) => header.includes(needle)))) return "transactions";
-    if (lower.some((header) => ["avg cost", "holding", "position"].some((needle) => header.includes(needle)))) return "holdings";
+    if (lower.some((header) => ["type", "price", "trade date", "trade_id", "fees", "transaktionstyp", "affärsnr", "avslutsdatum", "antal/nominellt", "kurs"].some((needle) => header.includes(needle)))) return "transactions";
+    if (lower.some((header) => ["avg cost", "holding", "position", "average purchase price", "base currency", "accountkey"].some((needle) => header.includes(needle)))) return "holdings";
     return "unknown";
   };
 
