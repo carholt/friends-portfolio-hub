@@ -6,7 +6,7 @@ describe("import_transactions_batch SQL", () => {
   const sql = readFileSync(
     resolve(
       process.cwd(),
-      "supabase/migrations/20260311100000_import_transactions_batch_rpc.sql"
+      "supabase/migrations/20260404000000_consolidated_schema.sql"
     ),
     "utf8"
   );

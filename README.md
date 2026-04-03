@@ -92,11 +92,11 @@ This repo includes `public/_redirects` with:
 
 That file is emitted into `dist/_redirects` during Vite build so deep links route to the SPA entrypoint on Pages.
 
-## 4) Supabase migrations (ordered + runnable)
+## 4) Supabase migrations (single consolidated baseline)
 
-Migrations are stored in `supabase/migrations` and ordered by timestamp prefix.
+Migrations are stored in `supabase/migrations` as a single consolidated baseline file.
 
-List migration order:
+List migration files:
 
 ```bash
 ls -1 supabase/migrations/*.sql | sort
@@ -110,10 +110,10 @@ supabase link --project-ref <project-ref>
 supabase db push
 ```
 
-For a brand-new database bootstrap in one run, use the consolidated file:
+For a brand-new database bootstrap in one run, use the same consolidated file directly:
 
 ```bash
-psql "$DATABASE_URL" -f supabase/bootstrap/00000000000000_full_schema.sql
+psql "$DATABASE_URL" -f supabase/migrations/20260404000000_consolidated_schema.sql
 ```
 
 Then insert your admin email so you can read global activity via RLS:

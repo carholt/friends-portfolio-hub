@@ -6,7 +6,7 @@ describe("get_portfolio_mining_dashboard SQL", () => {
   const sql = readFileSync(
     resolve(
       process.cwd(),
-      "supabase/migrations/20260403120000_add_mining_dashboard_rpc_and_ticker_suggestion_fallbacks.sql"
+      "supabase/migrations/20260404000000_consolidated_schema.sql"
     ),
     "utf8"
   );

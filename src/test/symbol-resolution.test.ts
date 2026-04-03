@@ -33,7 +33,7 @@ describe("symbol resolution helpers", () => {
 });
 
 describe("symbol resolution SQL pipeline", () => {
-  const sql = readFileSync(resolve(process.cwd(), "supabase/migrations/20260314090000_global_price_cache_and_symbol_overrides.sql"), "utf8");
+  const sql = readFileSync(resolve(process.cwd(), "supabase/migrations/20260404000000_consolidated_schema.sql"), "utf8");
 
   it("prioritizes manual override before broker/isin/raw symbol matching", () => {
     expect(sql).toContain("WHEN sa.resolution_source = 'manual_override' THEN 1");
