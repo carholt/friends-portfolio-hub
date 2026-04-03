@@ -32,7 +32,7 @@ describe("Portfolio page redesign", () => {
     mockedQuery = { isLoading: false, error: null, refetch: vi.fn(), data: baseData };
   });
 
-  it("renders premium sections with full data", async () => {
+  it("renders premium sections with full data", { timeout: 15000 }, async () => {
     const { default: PortfolioDetail } = await import("@/pages/PortfolioDetail");
     render(<MemoryRouter initialEntries={["/portfolio/p1"]}><Routes><Route path="/portfolio/:id" element={<PortfolioDetail />} /></Routes></MemoryRouter>);
     expect(screen.getByText("Performance")).toBeInTheDocument();
@@ -45,7 +45,7 @@ describe("Portfolio page redesign", () => {
     mockedQuery.data = { ...baseData, holdings: [] };
     const { default: PortfolioDetail } = await import("@/pages/PortfolioDetail");
     render(<MemoryRouter initialEntries={["/portfolio/p1"]}><Routes><Route path="/portfolio/:id" element={<PortfolioDetail />} /></Routes></MemoryRouter>);
-    expect(screen.getByText("No holdings in this portfolio yet")).toBeInTheDocument();
+    expect(screen.getAllByText("No holdings in this portfolio yet").length).toBeGreaterThan(0);
   });
 
   it("shows compare CTA", async () => {

@@ -1,7 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-
-import CreatePortfolioDialog from "@/components/CreatePortfolioDialog";
+import { describe, expect, it, vi, beforeAll, beforeEach } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 
 const createdRows: Record<string, unknown>[] = [];
 const toastSuccess = vi.fn();
@@ -55,7 +54,32 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
+}));
+
+vi.mock("@/components/ui/select", () => ({
+  Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SelectTrigger: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
+  SelectValue: ({ placeholder }: { placeholder?: string }) => <span>{placeholder ?? "value"}</span>,
+  SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+let CreatePortfolioDialog: (props: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onCreated: () => void;
+}) => JSX.Element;
+
 describe("CreatePortfolioDialog", () => {
+  beforeAll(async () => {
+    ({ default: CreatePortfolioDialog } = await import("@/components/CreatePortfolioDialog"));
+  });
+
   beforeEach(() => {
     createdRows.length = 0;
     toastSuccess.mockClear();
@@ -72,9 +96,11 @@ describe("CreatePortfolioDialog", () => {
     fireEvent.change(screen.getByPlaceholderText("Min guldportfölj"), { target: { value: "Testportfölj" } });
     fireEvent.click(screen.getByRole("button", { name: "Skapa portfölj" }));
 
-    await waitFor(() => {
-      expect(toastSuccess).toHaveBeenCalledWith("Portfölj skapad!");
-    });
+    for (let i = 0; i < 10 && toastSuccess.mock.calls.length === 0; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(toastSuccess).toHaveBeenCalledWith("Portfölj skapad!");
 
     expect(createdRows).toHaveLength(1);
     expect(createdRows[0]).toMatchObject({
