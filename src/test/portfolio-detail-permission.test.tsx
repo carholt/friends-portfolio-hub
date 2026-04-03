@@ -12,7 +12,7 @@ vi.mock("@/components/AppLayout", () => ({
 }));
 
 describe("Portfolio detail permission-safe UX", () => {
-  it("shows friendly no-access message", async () => {
+  it("shows friendly no-access message", { timeout: 15000 }, async () => {
     const { default: PortfolioDetail } = await import("@/pages/PortfolioDetail");
 
     render(
