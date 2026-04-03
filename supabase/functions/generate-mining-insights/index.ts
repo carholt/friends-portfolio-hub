@@ -67,10 +67,17 @@ Deno.serve(async (req) => {
     );
     if (insightError) throw insightError;
 
-    const { data: dashboard, error: dashboardError } = await adminClient.rpc(
+    let { data: dashboard, error: dashboardError } = await adminClient.rpc(
       "get_portfolio_mining_dashboard",
-      { _portfolio_id: portfolioId },
+      { portfolio_id: portfolioId },
     );
+
+    if (dashboardError?.code === "PGRST202") {
+      const legacyDashboard = await adminClient.rpc("get_portfolio_mining_dashboard", { _portfolio_id: portfolioId });
+      dashboard = legacyDashboard.data;
+      dashboardError = legacyDashboard.error;
+    }
+
     if (dashboardError) throw dashboardError;
 
     return new Response(

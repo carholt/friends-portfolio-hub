@@ -81,10 +81,28 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
       toast.error(`No suggestions for ${item.isin}`);
       return;
     }
-    const symbols = ((data?.suggestions || []) as any[]).map((x) => String(x.symbol || "").toUpperCase()).filter(Boolean).slice(0, 3);
+
+    const symbols = ((data?.suggestions || []) as any[])
+      .map((x) => {
+        const symbol = String(x.symbol || "").toUpperCase().trim();
+        const exchange = String(x.exchange_code || x.exchange || "").toUpperCase().trim();
+        if (!symbol) return "";
+        return exchange ? `${symbol}:${exchange}` : symbol;
+      })
+      .filter(Boolean)
+      .slice(0, 3);
+
     setTickerSuggestions((prev) => ({ ...prev, [item.isin]: symbols }));
+
     if (data?.suggested) {
       setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(String(data.suggested)) }));
+      return;
+    }
+
+    if (symbols[0]) {
+      setTickerResolutions((prev) => ({ ...prev, [item.isin]: normalizeTicker(symbols[0]) }));
+    } else {
+      toast.error(`No suggestions for ${item.isin}`);
     }
   };
 

@@ -75,6 +75,10 @@ const CURATED_SYMBOLS: CuratedSymbol[] = [
   { symbol: "KGC", exchange: "NYSE", company: "Kinross Gold" },
   { symbol: "NEM", exchange: "NYSE", company: "Newmont" },
 ];
+const CURATED_ISIN_SYMBOLS: Record<string, { symbol: string; exchange: string; name?: string }> = {
+  CA40066W1068: { symbol: "GWF", exchange: "TSX", name: "Great-West Lifeco" },
+};
+
 const micToExchange: Record<string, string> = {
   XNAS: "NASDAQ",
   XNYS: "NYSE",
@@ -161,11 +165,21 @@ const curatedMatchesByName = (name: string, preferredExchange: string | null) =>
   return scored;
 };
 
-async function suggestTicker(apiKey: string, isin: string, name: string, mic?: string | null) {
+async function suggestTicker(apiKey: string | null | undefined, isin: string, name: string, mic?: string | null) {
   const preferredExchange = normalizeExchange(mic ? micToExchange[normalize(mic)] || mic : null);
   const cacheKey = [isin, preferredExchange || "", normalize(name)].join("|");
   const cached = suggestionCache.get(cacheKey);
   if (cached) return cached;
+
+  const curatedIsin = CURATED_ISIN_SYMBOLS[isin];
+  if (curatedIsin) {
+    const curatedByIsinResult = {
+      suggested: providerSymbol(curatedIsin.symbol, curatedIsin.exchange),
+      suggestions: [{ symbol: curatedIsin.symbol, exchange_code: curatedIsin.exchange, name: curatedIsin.name || name, score: 100, source: "curated_isin" }],
+    };
+    suggestionCache.set(cacheKey, curatedByIsinResult);
+    return curatedByIsinResult;
+  }
 
   const curatedMatches = curatedMatchesByName(name, preferredExchange);
   if (curatedMatches.length > 0) {
@@ -204,6 +218,12 @@ async function suggestTicker(apiKey: string, isin: string, name: string, mic?: s
     return localResult;
   }
 
+  if (!apiKey) {
+    const emptyResult = { suggested: "", suggestions: [] as Record<string, unknown>[] };
+    suggestionCache.set(cacheKey, emptyResult);
+    return emptyResult;
+  }
+
   const byIsin = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(isin)}&apikey=${apiKey}`);
   const isinPayload = await byIsin.json();
   const isinData = Array.isArray(isinPayload?.data) ? isinPayload.data : [];
@@ -232,7 +252,7 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const twelveKey = Deno.env.get("TWELVE_DATA_API_KEY")!;
+    const twelveKey = Deno.env.get("TWELVE_DATA_API_KEY") || "";
 
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: req.headers.get("Authorization") || "" } },
