@@ -31,6 +31,15 @@ describe("ticker resolution utilities", () => {
     expect(preserveIsinMetadata(rows[0].metadata_json, "CA40066W1068")).toMatchObject({ isin: "CA40066W1068", source: "nordea" });
   });
 
+  it("uses normalized ISIN matching and stores exchange separately from ticker", () => {
+    const rows = applyTickerResolutionsToRows([
+      { symbol: "ca40066w1068", metadata_json: { source: "nordea", isin: "ca40066w1068" } },
+    ], { CA40066W1068: "gwf:tsx" });
+
+    expect(rows[0].symbol).toBe("GWF");
+    expect(rows[0].metadata_json).toMatchObject({ isin: "ca40066w1068", source: "nordea", exchange: "TSX" });
+  });
+
   it("builds exchange-qualified symbols for Twelve Data when needed", () => {
     expect(exchangeFromMic("XTSE")).toBe("TSX");
     expect(exchangeFromMic("XNAS")).toBe("NASDAQ");
