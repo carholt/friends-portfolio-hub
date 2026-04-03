@@ -159,7 +159,7 @@ Workflow: `.github/workflows/daily-price-update.yml`
 
 Required GitHub repository secrets:
 
-- `SUPABASE_FUNCTION_URL` (example: `https://<project-ref>.functions.supabase.co`)
+- `SUPABASE_FUNCTION_URL` (accepted formats: `https://<project-ref>.functions.supabase.co`, `https://<project-ref>.supabase.co/functions/v1`, or full function URL)
 - `SUPABASE_SERVICE_ROLE_KEY`
 
 ## 8) Copy/paste deployment checklist
