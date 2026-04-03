@@ -55,6 +55,12 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
   const totalSteps = detectedNordea ? 6 : 4;
   const validRows = useMemo(() => rows.filter((r) => r.valid), [rows]);
+  const invalidResolutionCount = useMemo(() => (
+    validRows.filter((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "invalid").length
+  ), [validRows, previewResolution]);
+  const resolvedPreviewCount = useMemo(() => (
+    validRows.filter((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "resolved").length
+  ), [validRows, previewResolution]);
   const resolverItems = useMemo<ResolverItem[]>(() => {
     if (!detectedNordea) return [];
     const byIsin = new Map<string, ResolverItem>();
@@ -247,9 +253,9 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     setBusy(true);
 
     try {
-      const hasInvalidPreview = validRows.some((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "invalid");
+      const hasInvalidPreview = invalidResolutionCount > 0;
       if (hasInvalidPreview && !importManualInvalid) {
-        toast.error("Some symbols are invalid/unresolvable. Resolve them or choose import anyway as manual/unpriced.");
+        toast.error(`${invalidResolutionCount} symbol(s) are invalid/unresolvable in the Resolution column. Resolve them or choose import anyway as manual/unpriced.`);
         return;
       }
 
@@ -379,10 +385,17 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
             <div className="flex items-center gap-2">
               <p className="text-sm">Preview and validation ({validRows.length}/{rows.length} valid)</p>
               {detectedNordea && <Badge variant="secondary">Nordea format detected</Badge>}
+              <Badge variant={invalidResolutionCount > 0 ? "destructive" : "outline"}>
+                Resolution: {resolvedPreviewCount}/{validRows.length} resolved
+              </Badge>
             </div>
             <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
           </div>
-          <p className="text-xs text-muted-foreground">Current mapping: symbol→symbol, quantity→quantity, avg cost→avg_cost</p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Status</TableHead><TableHead>Resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
+          <p className="text-xs text-muted-foreground">
+            {detectedNordea
+              ? "Nordea mapping is auto-applied from ISIN/name and validated below."
+              : "Current mapping: symbol→symbol, quantity→quantity, avg cost→avg_cost"}
+          </p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Row status</TableHead><TableHead>Ticker resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
           <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={importManualInvalid} onChange={(e) => setImportManualInvalid(e.target.checked)} />Import anyway as manual/unpriced for invalid symbols</label>
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(4)} disabled={validRows.length === 0}>Continue</Button></div>
         </div>}
