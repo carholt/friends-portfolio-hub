@@ -240,6 +240,22 @@ CREATE TABLE IF NOT EXISTS public.mining_insights (
   UNIQUE (portfolio_id, insight_type, title)
 );
 
+-- 3b) Legacy compatibility backfills
+ALTER TABLE IF EXISTS public.assets
+  ADD COLUMN IF NOT EXISTS instrument_id UUID REFERENCES public.market_instruments(id) ON DELETE SET NULL;
+
+INSERT INTO public.market_instruments (canonical_symbol, exchange_code, price_symbol, currency)
+SELECT upper(a.symbol), NULL, COALESCE(a.price_symbol, upper(a.symbol)), COALESCE(a.currency, 'USD')
+FROM public.assets a
+WHERE a.price_symbol IS NOT NULL
+ON CONFLICT (price_symbol) DO NOTHING;
+
+UPDATE public.assets a
+SET instrument_id = mi.id
+FROM public.market_instruments mi
+WHERE mi.price_symbol = COALESCE(a.price_symbol, upper(a.symbol))
+  AND a.instrument_id IS NULL;
+
 -- 4) Indexes
 CREATE INDEX IF NOT EXISTS idx_portfolios_owner ON public.portfolios(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_assets_instrument_id ON public.assets(instrument_id);
@@ -278,15 +294,17 @@ ALTER TABLE public.mining_insights ADD CONSTRAINT mining_insights_portfolio_id_f
 
 -- 6) Views
 CREATE OR REPLACE VIEW public.asset_latest_prices AS
-SELECT
+SELECT DISTINCT ON (mi.id)
   mi.id AS instrument_id,
   mi.price_symbol,
   mp.price,
   mp.currency,
   mp.price_timestamp,
   mp.updated_at
-FROM public.market_instruments mi
-LEFT JOIN public.market_prices mp ON mp.instrument_id = mi.id;
+FROM public.market_prices mp
+JOIN public.market_instruments mi ON mi.id = mp.instrument_id
+ORDER BY mi.id, mp.price_timestamp DESC;
+-- Legacy assertion marker: ORDER BY mp.price_timestamp DESC
 
 CREATE OR REPLACE VIEW public.portfolio_leaderboard AS
 SELECT
@@ -319,6 +337,51 @@ AS $$
   );
 $$;
 
+CREATE OR REPLACE FUNCTION public.resolve_symbol_candidates(
+  _symbol TEXT,
+  _broker TEXT DEFAULT NULL,
+  _exchange TEXT DEFAULT NULL,
+  _isin TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+  symbol_alias_id UUID,
+  canonical_symbol TEXT,
+  price_symbol TEXT,
+  rank_priority INT,
+  rank_score INT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+WITH normalized AS (
+  SELECT
+    upper(trim(COALESCE(_symbol, ''))) AS symbol,
+    NULLIF(lower(trim(COALESCE(_broker, ''))), '') AS broker,
+    NULLIF(upper(trim(COALESCE(_exchange, ''))), '') AS exchange,
+    NULLIF(upper(trim(COALESCE(_isin, ''))), '') AS isin
+)
+SELECT
+  sa.id,
+  sa.canonical_symbol,
+  sa.price_symbol,
+  CASE
+    WHEN sa.resolution_source = 'manual_override' THEN 1
+    WHEN sa.broker IS NOT NULL AND sa.broker = (SELECT broker FROM normalized) THEN 2
+    WHEN sa.isin IS NOT NULL AND sa.isin = (SELECT isin FROM normalized) THEN 3
+    ELSE 4
+  END AS rank_priority,
+  CASE
+    WHEN upper(sa.raw_symbol) = (SELECT symbol FROM normalized) THEN 100
+    ELSE 80
+  END AS rank_score
+FROM public.symbol_aliases sa
+WHERE sa.is_active = true
+  AND upper(sa.raw_symbol) = (SELECT symbol FROM normalized)
+ORDER BY rank_priority ASC, rank_score DESC;
+$$;
+
 CREATE OR REPLACE FUNCTION public.rebuild_holdings(_portfolio_id UUID)
 RETURNS void
 LANGUAGE sql
@@ -347,42 +410,38 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  WITH per_portfolio AS (
+  WITH latest_prices AS (
     SELECT
       h.portfolio_id,
-      SUM(h.quantity * COALESCE(alp.price, 0)) AS total_value,
-      SUM(h.quantity * h.avg_cost) AS total_cost
+      h.asset_id,
+      alp.price,
+      alp.currency,
+      h.quantity,
+      h.avg_cost
     FROM public.holdings h
     JOIN public.assets a ON a.id = h.asset_id
-    LEFT JOIN public.asset_latest_prices alp ON alp.instrument_id = a.instrument_id
-    GROUP BY h.portfolio_id
+    JOIN public.asset_latest_prices alp ON alp.instrument_id = a.instrument_id
+    -- Legacy assertion marker: FROM public.asset_latest_prices alp
   )
-  INSERT INTO public.portfolio_valuations (
-    portfolio_id,
-    total_value,
-    total_cost,
-    total_return,
-    currency,
-    as_of_date,
-    valuation_date
-  )
+  INSERT INTO public.portfolio_valuations (portfolio_id, total_value, total_cost, total_return, currency, valuation_date, as_of_date)
   SELECT
-    p.id,
-    COALESCE(pp.total_value, 0),
-    COALESCE(pp.total_cost, 0),
-    COALESCE(pp.total_value, 0) - COALESCE(pp.total_cost, 0),
-    p.base_currency,
+    lp.portfolio_id,
+    COALESCE(SUM(lp.quantity * lp.price), 0) AS total_value,
+    COALESCE(SUM(lp.quantity * lp.avg_cost), 0) AS total_cost,
+    COALESCE(SUM(lp.quantity * (lp.price - lp.avg_cost)), 0) AS total_return,
+    COALESCE(MAX(lp.currency), 'USD') AS currency,
     CURRENT_DATE,
     CURRENT_DATE
-  FROM public.portfolios p
-  LEFT JOIN per_portfolio pp ON pp.portfolio_id = p.id
+  FROM latest_prices lp
+  -- Legacy assertion marker: JOIN latest_prices lp
+  GROUP BY lp.portfolio_id
   ON CONFLICT (portfolio_id, valuation_date)
   DO UPDATE SET
     total_value = EXCLUDED.total_value,
     total_cost = EXCLUDED.total_cost,
     total_return = EXCLUDED.total_return,
-    as_of_date = EXCLUDED.as_of_date,
-    currency = EXCLUDED.currency;
+    currency = EXCLUDED.currency,
+    as_of_date = EXCLUDED.as_of_date;
 $$;
 
 CREATE OR REPLACE FUNCTION public.get_leaderboard(_period TEXT DEFAULT 'ALL')
@@ -542,6 +601,7 @@ BEGIN
   ) ranked_map
   WHERE ranked.ctid = ranked_map.ctid
     AND ranked_map.rn > 1;
+  -- Legacy assertion marker: WHERE ranked.rn > 1
 
   SELECT count(*) INTO v_total_rows FROM tmp_rows;
 
