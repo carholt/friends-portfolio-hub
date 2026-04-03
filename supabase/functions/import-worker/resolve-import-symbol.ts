@@ -22,6 +22,46 @@ const normalize = (value: string | null | undefined) => {
   return normalized ? normalized : null;
 };
 
+const sortCandidates = (data: ResolveSymbolCandidate[]) => data
+  .sort((a, b) => {
+    if (a.rank_priority !== b.rank_priority) return a.rank_priority - b.rank_priority;
+    return b.rank_score - a.rank_score;
+  });
+
+async function getBestCandidateInstrumentId(
+  adminClient: SupabaseClient,
+  symbol: string,
+  exchange: string | null,
+  broker: string | null,
+  isin: string | null,
+) {
+  const { data, error } = await adminClient.rpc("resolve_symbol_candidates", {
+    _raw_symbol: symbol,
+    _exchange: exchange,
+    _broker: broker,
+    _isin: isin,
+  });
+
+  if (error) throw error;
+
+  const candidates = sortCandidates((data ?? []) as ResolveSymbolCandidate[]);
+  return candidates[0]?.instrument_id ?? null;
+}
+
+async function resolveTickerFromIsin(adminClient: SupabaseClient, isin: string) {
+  const { data, error } = await adminClient.rpc("resolve_isin", {
+    _isin: isin,
+  });
+
+  if (error) {
+    return null;
+  }
+
+  const payload = (Array.isArray(data) ? data[0] : data) as { ticker?: string | null } | null;
+  const ticker = normalize(payload?.ticker)?.toUpperCase();
+  return ticker || null;
+}
+
 export async function resolveImportSymbol(
   adminClient: SupabaseClient,
   input: ResolveImportSymbolInput,
@@ -36,26 +76,41 @@ export async function resolveImportSymbol(
   const isin = normalize(input.isin)?.toUpperCase() ?? null;
   const name = normalize(input.name) ?? null;
 
-  const { data, error } = await adminClient.rpc("resolve_symbol_candidates", {
-    _raw_symbol: symbol,
-    _exchange: exchange,
-    _broker: broker,
-    _isin: isin,
-  });
-
-  if (error) {
-    throw error;
+  const directInstrumentId = await getBestCandidateInstrumentId(adminClient, symbol, exchange, broker, isin);
+  if (directInstrumentId) {
+    return directInstrumentId;
   }
 
-  const candidates = ((data ?? []) as ResolveSymbolCandidate[])
-    .sort((a, b) => {
-      if (a.rank_priority !== b.rank_priority) return a.rank_priority - b.rank_priority;
-      return b.rank_score - a.rank_score;
-    });
+  if (isin) {
+    const resolvedTicker = await resolveTickerFromIsin(adminClient, isin);
+    if (resolvedTicker && resolvedTicker !== symbol) {
+      const isinInstrumentId = await getBestCandidateInstrumentId(adminClient, resolvedTicker, exchange, broker, isin);
+      if (isinInstrumentId) {
+        return isinInstrumentId;
+      }
 
-  const best = candidates[0];
-  if (best?.instrument_id) {
-    return best.instrument_id;
+      const now = new Date().toISOString();
+      const { error: isinAliasError } = await adminClient
+        .from("symbol_aliases")
+        .insert({
+          raw_symbol: symbol,
+          exchange,
+          canonical_symbol: resolvedTicker,
+          price_symbol: resolvedTicker,
+          instrument_id: null,
+          broker,
+          isin,
+          asset_name_hint: name,
+          confidence: 0.7,
+          resolution_source: "isin_auto",
+          is_active: true,
+          updated_at: now,
+        });
+
+      if (isinAliasError && (isinAliasError as { code?: string }).code !== "23505") {
+        throw isinAliasError;
+      }
+    }
   }
 
   const now = new Date().toISOString();
