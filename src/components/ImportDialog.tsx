@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -55,12 +55,17 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
   const totalSteps = detectedNordea ? 6 : 4;
   const validRows = useMemo(() => rows.filter((r) => r.valid), [rows]);
+  const getPreviewResolutionKey = useCallback((row: any) => (
+    detectedNordea
+      ? String(row?.metadata_json?.isin ?? row.symbol ?? "").toUpperCase().trim()
+      : String(row.symbol || "").toUpperCase().trim()
+  ), [detectedNordea]);
   const invalidResolutionCount = useMemo(() => (
-    validRows.filter((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "invalid").length
-  ), [validRows, previewResolution]);
+    validRows.filter((row) => previewResolution[getPreviewResolutionKey(row)]?.status === "invalid").length
+  ), [getPreviewResolutionKey, previewResolution, validRows]);
   const resolvedPreviewCount = useMemo(() => (
-    validRows.filter((row) => previewResolution[String(row.symbol || "").toUpperCase().trim()]?.status === "resolved").length
-  ), [validRows, previewResolution]);
+    validRows.filter((row) => previewResolution[getPreviewResolutionKey(row)]?.status === "resolved").length
+  ), [getPreviewResolutionKey, previewResolution, validRows]);
   const resolverItems = useMemo<ResolverItem[]>(() => {
     if (!detectedNordea) return [];
     const byIsin = new Map<string, ResolverItem>();
@@ -221,7 +226,9 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
 
   useEffect(() => {
-    const uniqueSymbols = [...new Set(validRows.map((row) => String(row.symbol || "").toUpperCase().trim()).filter(Boolean))];
+    const uniqueSymbols = detectedNordea
+      ? [...new Set(validRows.map((row) => String(row?.metadata_json?.isin ?? row.symbol ?? "").toUpperCase().trim()).filter(Boolean))]
+      : [...new Set(validRows.map((row) => String(row.symbol || "").toUpperCase().trim()).filter(Boolean))];
     if (uniqueSymbols.length === 0) {
       setPreviewResolution({});
       return;
@@ -229,11 +236,43 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
     let active = true;
     const queue = [...uniqueSymbols];
+    const nordeaRowsByIsin = detectedNordea
+      ? new Map(uniqueSymbols.map((isin) => [isin, validRows.find((row) => String(row?.metadata_json?.isin ?? row.symbol ?? "").toUpperCase().trim() === isin)]))
+      : null;
     const nextState: Record<string, { status: SymbolResolutionStatus; reason?: string }> = {};
     const workers = Array.from({ length: Math.min(4, queue.length) }).map(async () => {
       while (queue.length) {
         const symbol = queue.shift();
         if (!symbol) break;
+        if (detectedNordea) {
+          const sourceRow = nordeaRowsByIsin?.get(symbol);
+          const name = String(sourceRow?.name || "").trim() || symbol;
+          const mic = String(sourceRow?.metadata_json?.mic || "").trim() || undefined;
+          const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", {
+            body: { mode: "suggest", isin: symbol, name, mic },
+          });
+
+          if (error) {
+            nextState[symbol] = { status: "invalid", reason: "suggestion request failed" };
+            continue;
+          }
+
+          const suggested = normalizeTicker(String(data?.suggested || ""));
+          const fallback = ((data?.suggestions || []) as any[])
+            .map((item) => {
+              const candidateSymbol = String(item.symbol || "").toUpperCase().trim();
+              const exchange = String(item.exchange_code || item.exchange || "").toUpperCase().trim();
+              if (!candidateSymbol) return "";
+              return normalizeTicker(exchange ? `${candidateSymbol}:${exchange}` : candidateSymbol);
+            })
+            .find(Boolean);
+          const resolvedTicker = suggested || fallback || "";
+          nextState[symbol] = resolvedTicker
+            ? { status: "resolved" }
+            : { status: "invalid", reason: "no ticker suggestion" };
+          continue;
+        }
+
         const { data } = await supabase.functions.invoke("resolve-symbol", { body: { symbol } });
         const resolution = applyImportResolution(symbol, ((data?.candidates || []) as SymbolCandidate[]));
         nextState[symbol] = { status: resolution.status, reason: resolution.reason };
@@ -247,7 +286,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     return () => {
       active = false;
     };
-  }, [validRows]);
+  }, [detectedNordea, validRows]);
 
   const runImport = async () => {
     setBusy(true);
@@ -395,7 +434,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
             {detectedNordea
               ? "Nordea mapping is auto-applied from ISIN/name and validated below."
               : "Current mapping: symbol→symbol, quantity→quantity, avg cost→avg_cost"}
-          </p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Row status</TableHead><TableHead>Ticker resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = String(r.symbol || "").toUpperCase().trim(); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
+          </p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Row status</TableHead><TableHead>Ticker resolution</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => { const key = getPreviewResolutionKey(r); const resolution = previewResolution[key]; return <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{resolution?.status === "resolved" ? <Badge>resolved</Badge> : resolution?.status === "ambiguous" ? <Badge variant="secondary">ambiguous</Badge> : resolution?.status === "invalid" ? <Badge variant="destructive">invalid</Badge> : <span className="text-xs text-muted-foreground">checking…</span>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>; })}</TableBody></Table>
           <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={importManualInvalid} onChange={(e) => setImportManualInvalid(e.target.checked)} />Import anyway as manual/unpriced for invalid symbols</label>
           <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(4)} disabled={validRows.length === 0}>Continue</Button></div>
         </div>}
