@@ -27,6 +27,16 @@ describe("import parsing", () => {
     expect(detectNordeaHoldingsFormat(workbook)).toBe(true);
   });
 
+  it("detects Nordea holdings format when sheet name is not Holdings", () => {
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ["Type", "AccountKey", "ISIN", "CURRENCY"],
+      ["Custody", "A1", "US0378331005", "USD"],
+    ]);
+    XLSX.utils.book_append_sheet(workbook, sheet, "Innehav");
+    expect(detectNordeaHoldingsFormat(workbook)).toBe(true);
+  });
+
   it("parses Nordea Holdings Excel format and maps ISIN to symbol/metadata", () => {
     const rows = [
       ["2026-03-03 21:51:02"],
@@ -54,6 +64,29 @@ describe("import parsing", () => {
       avg_cost: 125,
       cost_currency: "USD",
       metadata_json: { isin: "US0378331005", mic: "XNAS", source: "nordea" },
+    });
+  });
+
+  it("parses Nordea comma-decimal values from localized exports", () => {
+    const rows = [
+      ["2026-04-03 13:31:48"],
+      ["Type", "AccountKey", "Account", "ISIN", "CURRENCY", "NAME", "HOLDINGS", "PRICE", "Average purchase price", "Base currency", "MIC"],
+      ["Custody", "A1", "Main", "CA82825J1093", "CAD", "Silver Storm Mining", "1213", "0,465", "0,603526", "SEK", "XTSX"],
+    ];
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, sheet, "Export");
+
+    const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const parsed = parseExcelImport(buffer);
+
+    expect(parsed.detectedNordea).toBe(true);
+    expect(parsed.holdings).toHaveLength(1);
+    expect(parsed.holdings[0]).toMatchObject({
+      symbol: "CA82825J1093",
+      quantity: 1213,
+      avg_cost: 0.603526,
+      cost_currency: "CAD",
     });
   });
 
