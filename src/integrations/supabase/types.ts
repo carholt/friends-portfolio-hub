@@ -77,6 +77,92 @@ export type Database = {
         }
         Relationships: []
       }
+      company_ai_report_sales: {
+        Row: {
+          created_at: string
+          currency: string
+          payment_id: string | null
+          price_paid: number
+          report_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          currency?: string
+          payment_id?: string | null
+          price_paid?: number
+          report_id: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          currency?: string
+          payment_id?: string | null
+          price_paid?: number
+          report_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "company_ai_report_sales_report_id_fkey"
+            columns: ["report_id"]
+            isOneToOne: false
+            referencedRelation: "company_ai_reports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      company_ai_reports: {
+        Row: {
+          asset_id: string
+          assumptions: Json
+          completed_at: string | null
+          created_at: string
+          created_by: string | null
+          error: string | null
+          id: string
+          model: string | null
+          portfolio_id: string | null
+          report: Json | null
+          sources: Json
+          status: string
+          tokens_in: number | null
+          tokens_out: number | null
+        }
+        Insert: {
+          asset_id: string
+          assumptions?: Json
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string | null
+          error?: string | null
+          id?: string
+          model?: string | null
+          portfolio_id?: string | null
+          report?: Json | null
+          sources?: Json
+          status?: string
+          tokens_in?: number | null
+          tokens_out?: number | null
+        }
+        Update: {
+          asset_id?: string
+          assumptions?: Json
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string | null
+          error?: string | null
+          id?: string
+          model?: string | null
+          portfolio_id?: string | null
+          report?: Json | null
+          sources?: Json
+          status?: string
+          tokens_in?: number | null
+          tokens_out?: number | null
+        }
+        Relationships: []
+      }
       group_invites: {
         Row: {
           created_at: string
@@ -355,6 +441,7 @@ export type Database = {
           display_name: string | null
           id: string
           onboarding_completed: boolean
+          subscription_tier: string
           updated_at: string
           user_id: string
         }
@@ -364,6 +451,7 @@ export type Database = {
           display_name?: string | null
           id?: string
           onboarding_completed?: boolean
+          subscription_tier?: string
           updated_at?: string
           user_id: string
         }
@@ -373,6 +461,7 @@ export type Database = {
           display_name?: string | null
           id?: string
           onboarding_completed?: boolean
+          subscription_tier?: string
           updated_at?: string
           user_id?: string
         }
@@ -416,6 +505,14 @@ export type Database = {
         Returns: undefined
       }
       owns_portfolio: { Args: { _portfolio_id: string }; Returns: boolean }
+      request_company_ai_report: {
+        Args: { _asset_id: string; _assumptions?: Json; _portfolio_id?: string | null }
+        Returns: string
+      }
+      user_has_access_to_report: {
+        Args: { _report_id: string; _user_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
       asset_type: "stock" | "etf" | "fund" | "metal" | "other"
