@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { ALREADY_PROCESSING_STATUS, tryClaimQueuedReport } from "./claim.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -101,6 +102,8 @@ Deno.serve(async (req) => {
     global: { headers: { Authorization: req.headers.get("Authorization") || "" } },
   });
   const adminClient = createClient(supabaseUrl, serviceRoleKey);
+  let acquiredByWorker = false;
+  let currentWorkerId: string | null = null;
 
   try {
     const { data: authData } = await userClient.auth.getUser();
@@ -162,7 +165,19 @@ Deno.serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
-    await adminClient.from("company_ai_reports").update({ status: "running", error: null }).eq("id", report_id);
+    currentWorkerId = crypto.randomUUID();
+    const claimed = await tryClaimQueuedReport({
+      adminClient: adminClient as any,
+      reportId: report_id,
+      workerId: currentWorkerId,
+      nowIso: new Date().toISOString(),
+    });
+    if (!claimed) {
+      return new Response(JSON.stringify({ ok: true, report_id, status: ALREADY_PROCESSING_STATUS }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    acquiredByWorker = true;
 
     const assumptions = (reportRow.assumptions || {}) as Record<string, unknown>;
     const useWebSearch = assumptions.mode !== "quick";
@@ -222,7 +237,8 @@ Deno.serve(async (req) => {
         tokens_out: openAiPayload?.usage?.output_tokens ?? null,
         error: null,
       })
-      .eq("id", report_id);
+      .eq("id", report_id)
+      .eq("worker_id", currentWorkerId);
 
     return new Response(JSON.stringify({ ok: true, report_id }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -230,11 +246,12 @@ Deno.serve(async (req) => {
   } catch (error) {
     const body = await req.clone().json().catch(() => ({}));
     const reportId = body?.report_id;
-    if (reportId) {
+    if (reportId && acquiredByWorker && currentWorkerId) {
       await adminClient
         .from("company_ai_reports")
         .update({ status: "failed", error: error instanceof Error ? error.message : "Unknown error" })
-        .eq("id", reportId);
+        .eq("id", reportId)
+        .eq("worker_id", currentWorkerId);
     }
 
     return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
