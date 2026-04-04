@@ -201,7 +201,7 @@ export function buildPreviewRows(
         normalize(row[mapping.columns.trade_type || ""])
       ),
       symbol_raw: symbol,
-      isin: normalize(row[mapping.columns.isin || ""]) || null,
+      isin: normalize(row[mapping.columns.isin || ""]).toUpperCase() || null,
       exchange_raw: exchangeRaw,
       exchange_code: exchangeMapping.exchange_code,
       price_symbol: exchangeMapping.price_symbol,

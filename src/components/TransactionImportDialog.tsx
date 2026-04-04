@@ -95,7 +95,11 @@ export default function TransactionImportDialog({ open, onOpenChange, portfolioI
       }
     }
 
-    const detected = detectMapping(parsed.headers, parsed.sampleRows as Record<string, string>[]);
+    const detected = detectMapping(
+      parsed.headers,
+      parsed.sampleRows as Record<string, string>[],
+      parsed.delimiter,
+    );
     updatePreview(detected);
     setStep(2);
   };

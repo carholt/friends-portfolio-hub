@@ -94,6 +94,46 @@ describe("Nordea transaction import parsing", () => {
     expect(hashA).toBe(hashB);
   });
 
+  it("normalizes imported ISIN values to uppercase", () => {
+    const mapping = {
+      kind: "transactions",
+      broker_key: "nordea",
+      delimiter: ",",
+      decimal: ".",
+      date_parser: "iso",
+      columns: {
+        trade_type: "type",
+        symbol: "symbol",
+        isin: "isin",
+        exchange: "exchange",
+        date: "date",
+        quantity: "quantity",
+        price: "price",
+        currency: "currency",
+      },
+      transforms: {
+        symbol_cleaning_rules: [],
+        numeric_parse_rules: [],
+        exchange_map_rules: {},
+      },
+      confidence: 1,
+      questions: [],
+    } satisfies ImportMapping;
+
+    const preview = buildPreviewRows([{
+      type: "buy",
+      symbol: "aya",
+      isin: "ca05466c1005",
+      exchange: "tsx",
+      date: "2025-01-10",
+      quantity: "1",
+      price: "1",
+      currency: "sek",
+    }], mapping);
+
+    expect(preview[0].tx.isin).toBe("CA05466C1005");
+  });
+
   it("re-imports missing trade_id rows without duplication using stable hash", () => {
     const mapping = {
       kind: "transactions",
