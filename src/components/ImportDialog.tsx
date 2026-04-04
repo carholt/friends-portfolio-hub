@@ -9,12 +9,13 @@ import { Label } from "@/components/ui/label";
 import { Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { groupNordeaHoldingsByAccount, parseCSV, parseExcelImport, parseJSONImport, validateImportRows, type NordeaAccountGroup } from "@/lib/portfolio-utils";
-import { applyTickerResolutionsToRows, extractTickerAndExchange, normalizeTicker } from "@/lib/ticker-resolution";
+import { applyTickerResolutionsToRows, normalizeTicker } from "@/lib/ticker-resolution";
 import { applyImportResolution, type SymbolResolutionStatus, type SymbolCandidate } from "@/lib/symbol-resolution";
 import { logAuditAction } from "@/lib/audit";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { parseDelimitedFile } from "@/lib/import-engine";
 import { detectHoldingsImportIssue } from "@/lib/import-guards";
+import { resolveIsin } from "@/lib/isin-resolution";
 
 type ImportFormat = "csv" | "json" | "xlsx";
 type ImportMode = "replace" | "merge";
@@ -99,20 +100,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     setTickerResolutions(defaults);
   }, [detectedNordea, resolverItems]);
 
-  const resolveViaApi = useCallback(async (isin: string) => {
-    const response = await fetch("/api/resolve-isin", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ isin }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      return { ticker: null, error: data?.error || "lookup_failed", exchange: null };
-    }
-    return data;
-  }, []);
+  const resolveViaApi = useCallback(async (isin: string) => resolveIsin(isin), []);
 
   useEffect(() => {
     if (!detectedNordea || step !== 3 || resolverItems.length === 0) return;
@@ -312,40 +300,17 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         const symbol = queue.shift();
         if (!symbol) break;
         if (detectedNordea) {
-          const sourceRow = nordeaRowsByIsin?.get(symbol);
-          const name = String(sourceRow?.name || "").trim() || symbol;
-          const mic = String(sourceRow?.metadata_json?.mic || "").trim() || undefined;
-          const { data, error } = await supabase.functions.invoke("resolve-asset-ticker", {
-            body: { mode: "suggest", isin: symbol, name, mic },
-          });
-
-          if (error) {
-            const fallbackData = await resolveViaApi(symbol);
-            if (fallbackData?.ticker) {
-              nextState[symbol] = { status: "resolved" };
-              setTickerResolutions((prev) => {
-                if (prev[symbol]?.trim()) return prev;
-                return { ...prev, [symbol]: formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || "")) };
-              });
-              continue;
-            }
-            nextState[symbol] = { status: "invalid", reason: "suggestion request failed" };
-            continue;
+          const fallbackData = await resolveViaApi(symbol);
+          const resolvedTicker = fallbackData?.ticker
+            ? formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""))
+            : "";
+          nextState[symbol] = resolvedTicker ? { status: "resolved" } : { status: "invalid", reason: String(fallbackData?.error || "no ticker suggestion") };
+          if (resolvedTicker) {
+            setTickerResolutions((prev) => {
+              if (prev[symbol]?.trim()) return prev;
+              return { ...prev, [symbol]: resolvedTicker };
+            });
           }
-
-          const suggested = normalizeTicker(String(data?.suggested || ""));
-          const fallback = ((data?.suggestions || []) as any[])
-            .map((item) => {
-              const candidateSymbol = String(item.symbol || "").toUpperCase().trim();
-              const exchange = String(item.exchange_code || item.exchange || "").toUpperCase().trim();
-              if (!candidateSymbol) return "";
-              return normalizeTicker(exchange ? `${candidateSymbol}:${exchange}` : candidateSymbol);
-            })
-            .find(Boolean);
-          const resolvedTicker = suggested || fallback || "";
-          nextState[symbol] = resolvedTicker
-            ? { status: "resolved" }
-            : { status: "invalid", reason: "no ticker suggestion" };
           continue;
         }
 
@@ -394,16 +359,6 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         toast.error("Some ISINs are unresolved. Resolve them or confirm manual import for unresolved rows.");
         return;
       }
-
-      await supabase.functions.invoke("resolve-asset-ticker", {
-        body: {
-          mode: "apply",
-          resolutions: resolverItems.map((item) => {
-            const parsed = extractTickerAndExchange(tickerResolutions[item.isin] || "");
-            return { isin: item.isin, ticker: parsed.ticker, exchange: parsed.exchange, name: item.name, mic: item.mic };
-          }),
-        },
-      });
 
       const importRows = applyTickerResolutionsToRows(validRows, tickerResolutions);
 
@@ -629,7 +584,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
                         <div className="text-xs">{(tickerSuggestions[item.isin] || [value]).join(", ")}</div>
                       ) : (
                         <div className="text-xs">
-                          No market data found{resolverErrors[item.isin] ? ` (${resolverErrors[item.isin]})` : ""}
+                          No market data found{resolverErrors[item.isin] ? ` (${resolverErrors[item.isin]})` : ""} · fallback: {value || "UNKNOWN"}
                         </div>
                       )}
                       {status === "manual_required" && (
