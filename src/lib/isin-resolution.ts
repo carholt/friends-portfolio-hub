@@ -1,3 +1,5 @@
+import { supabase } from "@/integrations/supabase/client";
+
 const RESOLVE_ISIN_URL = "https://hzcmnjpawiyxvscyzsto.supabase.co/functions/v1/resolve-isin";
 
 export interface ResolveIsinResponse {
@@ -17,27 +19,41 @@ export async function resolveIsin(isin: string): Promise<ResolveIsinResponse> {
     return isinCache.get(normalizedIsin)!;
   }
 
-  console.log("Resolving ISIN:", normalizedIsin);
+  const promise = supabase.auth.getSession().then(async ({ data: { session } }) => {
+    if (!session?.access_token) {
+      return {
+        isin: normalizedIsin,
+        ticker: null,
+        exchange: null,
+        error: "Missing authenticated session",
+      };
+    }
 
-  const promise = fetch(RESOLVE_ISIN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ isin: normalizedIsin }),
-  }).then(async (res) => {
-    const data = (await res.json().catch(() => ({}))) as Partial<ResolveIsinResponse>;
+    const res = await fetch(RESOLVE_ISIN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ isin: normalizedIsin }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
     if (!res.ok) {
       return {
         isin: normalizedIsin,
         ticker: null,
         exchange: null,
-        error: String(data?.error || `resolve-isin failed: ${res.status}`),
+        error: data?.error || `resolve-isin failed: ${res.status}`,
       };
     }
+
     return {
       isin: String(data?.isin || normalizedIsin),
       ticker: data?.ticker ? String(data.ticker) : null,
       exchange: data?.exchange ? String(data.exchange) : null,
-      error: data?.error ? String(data.error) : undefined,
     };
   }).catch((error: unknown) => ({
     isin: normalizedIsin,
