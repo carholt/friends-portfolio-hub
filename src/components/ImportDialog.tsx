@@ -300,7 +300,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
           const resolvedTicker = fallbackData?.ticker
             ? formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""))
             : "";
-          nextState[symbol] = resolvedTicker ? { status: "resolved" } : { status: "invalid", reason: "no ticker suggestion" };
+          nextState[symbol] = resolvedTicker ? { status: "resolved" } : { status: "invalid", reason: String(fallbackData?.error || "no ticker suggestion") };
           if (resolvedTicker) {
             setTickerResolutions((prev) => {
               if (prev[symbol]?.trim()) return prev;
@@ -488,7 +488,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         }
 
         setResolverStatus((prev) => ({ ...prev, [item.isin]: "manual_required" }));
-        setResolverErrors((prev) => ({ ...prev, [item.isin]: "unresolved" }));
+        setResolverErrors((prev) => ({ ...prev, [item.isin]: String(result?.error || "unresolved") }));
       });
     };
 

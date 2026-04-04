@@ -18,6 +18,13 @@ type MappingRow = {
   source: string | null;
 };
 
+type ResolveIsinBatchRow = {
+  isin: string;
+  ticker: string | null;
+  exchange: string | null;
+  error?: string;
+};
+
 type OpenFigiMappingItem = {
   ticker?: string;
   name?: string;
@@ -71,11 +78,16 @@ async function fetchOpenFigiBatch(isins: string[], openFigiApiKey?: string) {
     });
 
     if (!response.ok) {
+      const details = await response.text();
+      if (response.status >= 500) {
+        throw new Error(`OpenFIGI transient error: ${response.status} ${details}`);
+      }
+
       return {
         error: {
           status: response.status,
           message: `OpenFIGI batch request failed with status ${response.status}`,
-          details: await response.text(),
+          details,
         },
       };
     }
@@ -118,6 +130,25 @@ async function fetchOpenFigiBatch(isins: string[], openFigiApiKey?: string) {
     };
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function fetchOpenFigiBatchWithRetry(isins: string[], openFigiApiKey?: string) {
+  try {
+    return await fetchOpenFigiBatch(isins, openFigiApiKey);
+  } catch (error) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    try {
+      return await fetchOpenFigiBatch(isins, openFigiApiKey);
+    } catch (retryError) {
+      return {
+        error: {
+          status: 502,
+          message: "Failed to call OpenFIGI after retry",
+          details: retryError instanceof Error ? retryError.message : String(error),
+        },
+      };
+    }
   }
 }
 
@@ -170,6 +201,7 @@ Deno.serve(async (req) => {
   }
 
   const resultByIsin = new Map<string, MappingRow>();
+  const errorByIsin = new Map<string, string>();
   (cachedMappings ?? []).forEach((row) => {
     if (row?.isin) {
       resultByIsin.set(String(row.isin).toUpperCase(), {
@@ -186,10 +218,18 @@ Deno.serve(async (req) => {
   const missingIsins = normalizedIsins.filter((isin) => !resultByIsin.has(isin));
 
   if (missingIsins.length > 0) {
-    const figiResult = await fetchOpenFigiBatch(missingIsins, openFigiApiKey);
-    if (figiResult.error) return jsonResponse(figiResult.error, figiResult.error.status);
+    const figiResult = await fetchOpenFigiBatchWithRetry(missingIsins, openFigiApiKey);
+    if (figiResult.error) {
+      missingIsins.forEach((isin) => errorByIsin.set(isin, `openfigi_error_${figiResult.error.status}`));
+    }
 
-    const newMappings = Array.from(figiResult.data.values()).filter((row) => row.ticker);
+    const newMappings = figiResult.data ? Array.from(figiResult.data.values()).filter((row) => row.ticker) : [];
+    missingIsins.forEach((isin) => {
+      if (!figiResult.data?.has(isin)) {
+        const existingError = errorByIsin.get(isin);
+        errorByIsin.set(isin, existingError || "no_match");
+      }
+    });
 
     if (newMappings.length > 0) {
       const { data: insertedRows, error: insertError } = await supabase
@@ -198,34 +238,38 @@ Deno.serve(async (req) => {
         .select("isin,ticker,name,exchange,currency,source");
 
       if (insertError) {
-        return jsonResponse(
-          {
-            error: "Failed to insert instrument mappings",
-            details: insertError.message,
-            code: insertError.code,
-          },
-          mapSupabaseErrorStatus(insertError),
-        );
+        const status = mapSupabaseErrorStatus(insertError);
+        missingIsins.forEach((isin) => {
+          if (!resultByIsin.has(isin)) {
+            errorByIsin.set(isin, status === 403 ? "permission_denied" : "cache_insert_failed");
+          }
+        });
       }
 
-      (insertedRows ?? []).forEach((row) => {
-        if (row?.isin) {
-          resultByIsin.set(String(row.isin).toUpperCase(), {
-            isin: String(row.isin).toUpperCase(),
-            ticker: row.ticker,
-            name: row.name,
-            exchange: row.exchange,
-            currency: row.currency,
-            source: row.source,
-          });
-        }
-      });
+      if (!insertError) {
+        (insertedRows ?? []).forEach((row) => {
+          if (row?.isin) {
+            resultByIsin.set(String(row.isin).toUpperCase(), {
+              isin: String(row.isin).toUpperCase(),
+              ticker: row.ticker,
+              name: row.name,
+              exchange: row.exchange,
+              currency: row.currency,
+              source: row.source,
+            });
+            errorByIsin.delete(String(row.isin).toUpperCase());
+          }
+        });
+      }
     }
   }
 
-  return jsonResponse(normalizedIsins.map((isin) => ({
+  const responseRows: ResolveIsinBatchRow[] = normalizedIsins.map((isin) => ({
     isin,
     ticker: resultByIsin.get(isin)?.ticker ?? null,
     exchange: resultByIsin.get(isin)?.exchange ?? null,
-  })));
+    error: errorByIsin.get(isin),
+  }));
+
+  return jsonResponse(responseRows);
 });

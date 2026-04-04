@@ -6,6 +6,7 @@ export interface ResolveIsinBatchRow {
   isin: string;
   ticker: string | null;
   exchange?: string | null;
+  error?: string;
 }
 
 function normalizeIsin(isin: string) {
@@ -54,6 +55,7 @@ export async function resolveIsins(isins: string[]) {
         isin: normalizeIsin(row.isin),
         ticker: row?.ticker ? String(row.ticker) : null,
         exchange: row?.exchange ? String(row.exchange) : null,
+        error: row?.error ? String(row.error) : undefined,
       });
     }
   }
