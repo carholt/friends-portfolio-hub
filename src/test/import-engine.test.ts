@@ -9,10 +9,11 @@ describe("import-engine", () => {
 
   it("maps Nordea headers", () => {
     const parsed = parseDelimitedFile(fixture);
-    const mapping = detectMapping(parsed.headers, parsed.sampleRows);
+    const mapping = detectMapping(parsed.headers, parsed.sampleRows, parsed.delimiter);
     expect(mapping.broker_key).toBe("nordea");
     expect(mapping.kind).toBe("transactions");
     expect(mapping.columns.symbol).toBe("Ticker");
+    expect(mapping.delimiter).toBe(";");
   });
 
   it("parses comma decimals", () => {

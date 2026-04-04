@@ -1,4 +1,4 @@
-import { supabase } from './supabaseClient'; // make sure your Supabase client import is correct
+import { supabase } from "@/integrations/supabase/client";
 
 const BATCH_URL = "https://hzcmnjpawiyxvscyzsto.supabase.co/functions/v1/resolve-isin-batch";
 const MAX_BATCH_SIZE = 50;
@@ -37,7 +37,7 @@ async function fetchIsinBatch(isins: string[]) {
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${token}`,
-      "apikey": process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "" // or your server key if needed
+      "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY,
     },
     body: JSON.stringify({ isins }),
   });

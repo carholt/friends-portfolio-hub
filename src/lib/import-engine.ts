@@ -98,7 +98,11 @@ const headerIncludes = (headers: string[], candidates: string[]) => candidates.s
 
 const pickHeader = (headers: string[], candidates: string[]) => headers.find((header) => candidates.some((candidate) => normalize(header).includes(normalize(candidate))));
 
-export const detectMapping = (headers: string[], sampleRows: Record<string, string>[]): ImportMapping => {
+export const detectMapping = (
+  headers: string[],
+  sampleRows: Record<string, string>[],
+  delimiterHint?: ";" | "," | "\t",
+): ImportMapping => {
   const lowerHeaders = headers.map((header) => normalize(header));
   const nordeaSignals = ["Affärsnr", "Transaktionstyp", "Avslutsdatum", "Antal/Nominellt"].filter((candidate) => lowerHeaders.includes(normalize(candidate))).length;
   const avanzaSignals = ["Datum", "Typ av transaktion", "Antal", "Pris", "Belopp"].filter((candidate) => lowerHeaders.includes(normalize(candidate))).length;
@@ -153,10 +157,12 @@ export const detectMapping = (headers: string[], sampleRows: Record<string, stri
   if (!columns.exchange && kind === "transactions") questions.push("Which exchange is this?");
   if (!columns.quantity) questions.push("Could not parse quantity column. Which column should be quantity?");
 
+  const inferredDelimiter: ";" | "," | "\t" = delimiterHint ?? ",";
+
   return {
     kind,
     broker_key,
-    delimiter: detectDelimiter(headers.join(";")),
+    delimiter: inferredDelimiter,
     decimal,
     date_parser,
     columns,
