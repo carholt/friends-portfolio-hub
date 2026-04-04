@@ -1,18 +1,15 @@
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, ArrowUpDown, Bot, RefreshCw, Trash2, Users } from "lucide-react";
+import { Bot, RefreshCw, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import AppLayout from "@/components/AppLayout";
 import { supabase } from "@/integrations/supabase/client";
 import { formatCurrency } from "@/lib/format";
-import { exportToCSV, exportToJSON } from "@/lib/portfolio-utils";
 import { refreshPortfolioValuationOnly } from "@/lib/portfolio-refresh";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ErrorState } from "@/components/feedback/ErrorState";
@@ -25,37 +22,15 @@ import TransactionsTable from "@/components/TransactionsTable";
 import PortfolioIntelligenceTable from "@/components/PortfolioIntelligenceTable";
 import HoldingsTable from "@/components/portfolio/HoldingsTable";
 import PortfolioHealthPanel, { buildHealthScores } from "@/components/portfolio/PortfolioHealthPanel";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { resolveIsins } from "@/lib/isin-batch-resolution";
-
-const benchmarkMap: Record<string, number> = { sp500: 8.7, omx: 7.1, gold: 11.2, silver: 6.4 };
 
 export default function PortfolioDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [benchmark, setBenchmark] = useState("sp500");
   const [showImport, setShowImport] = useState(false);
   const [showTxImport, setShowTxImport] = useState(false);
   const [resolveAsset, setResolveAsset] = useState<any | null>(null);
   const [tradeType, setTradeType] = useState<TradeType | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
-  const [holdingEditorOpen, setHoldingEditorOpen] = useState(false);
-  const [holdingDraft, setHoldingDraft] = useState<any>({ symbol: "", quantity: "", avg_cost: "", cost_currency: "USD", id: null });
-  const [deletingHolding, setDeletingHolding] = useState<any | null>(null);
 
-  // Fetch portfolio, holdings, transactions, valuation, prices
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["portfolio", id],
     queryFn: async () => {
@@ -67,7 +42,6 @@ export default function PortfolioDetail() {
         .eq("portfolio_id", id!)
         .limit(400);
 
-      // RELAXED JOIN to avoid 400 Bad Request
       const { data: transactions } = await supabase
         .from("transactions" as any)
         .select("*, asset:assets(symbol), user:profiles(display_name)")
@@ -89,7 +63,9 @@ export default function PortfolioDetail() {
         : { data: [] as any[] };
 
       const latestPrice = new Map<string, number>();
-      for (const p of prices || []) if (!latestPrice.has(p.asset_id)) latestPrice.set(p.asset_id, Number(p.price));
+      for (const p of prices || []) {
+        if (!latestPrice.has(p.asset_id)) latestPrice.set(p.asset_id, Number(p.price));
+      }
 
       return {
         portfolio,
@@ -101,40 +77,23 @@ export default function PortfolioDetail() {
         transactions: transactions || [],
         valuation,
         overLimit: (count || 0) > 200,
-        latestPrice,
       };
     },
     enabled: !!id,
   });
-
-  // Fix for batch ISIN resolution to include session token
-  const handleResolveIsins = async (isins: string[]) => {
-    try {
-      const results = await resolveIsins(isins);
-      return results;
-    } catch (err: any) {
-      toast.error(`ISIN resolution failed: ${err.message}`);
-      return new Map();
-    }
-  };
 
   const estimatedValue = useMemo(
     () => (data?.holdings || []).reduce((sum: number, h: any) => sum + Number(h.quantity) * Number(h.latest_price || 0), 0),
     [data]
   );
   const portfolioValue = data?.valuation?.total_value ? Number(data.valuation.total_value) : estimatedValue;
-  const totalCost = useMemo(
-    () => (data?.holdings || []).reduce((sum: number, h: any) => sum + Number(h.quantity) * Number(h.avg_cost || 0), 0),
-    [data]
-  );
-  const totalReturn = portfolioValue - totalCost;
-  const totalReturnPct = totalCost > 0 ? (totalReturn / totalCost) * 100 : 0;
-  const benchmarkDiff = totalReturnPct - benchmarkMap[benchmark];
+  const healthScores = buildHealthScores(data?.holdings || [], portfolioValue);
 
   if (isLoading) return <AppLayout><PageSkeleton rows={5} /></AppLayout>;
+
   if (error) {
     const permissionDenied = /permission|not allowed|access denied/i.test(error.message);
-    if (permissionDenied)
+    if (permissionDenied) {
       return (
         <AppLayout>
           <EmptyState
@@ -145,28 +104,114 @@ export default function PortfolioDetail() {
           />
         </AppLayout>
       );
+    }
+
     return <AppLayout><ErrorState message={error.message} onAction={() => refetch()} /></AppLayout>;
   }
-  if (!data?.portfolio)
+
+  if (!data?.portfolio) {
     return (
       <AppLayout>
-        <EmptyState
-          title="Portfolio missing"
-          message="This portfolio could not be found."
-          ctaLabel="Back"
-          onCta={() => history.back()}
-        />
+        <EmptyState title="Portfolio missing" message="This portfolio could not be found." ctaLabel="Back" onCta={() => navigate(-1)} />
       </AppLayout>
     );
+  }
 
   const isOwner = data.currentUserId != null && data.currentUserId === data.portfolio.owner_user_id;
-  const healthScores = buildHealthScores(data.holdings, portfolioValue);
 
-  // --- The rest of the JSX remains unchanged ---
+  const refreshValuation = async () => {
+    const result = await refreshPortfolioValuationOnly(data.portfolio.id);
+    if (!result.ok) {
+      toast.error(result.error || "Refresh failed");
+      return;
+    }
+    toast.success("Valuation refreshed");
+    await refetch();
+  };
+
   return (
     <AppLayout>
-      {/* All your existing JSX, tabs, dialogs, alerts, holdings table, transactions table, etc. */}
-      {/* Replace any existing ISIN batch resolution call with handleResolveIsins */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">{data.portfolio.name}</h1>
+            <p className="text-sm text-muted-foreground">{formatCurrency(portfolioValue, data.portfolio.base_currency || "USD")}</p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setShowImport(true)}>Import holdings</Button>
+            <Button variant="outline" onClick={() => setShowTxImport(true)}>Import transactions</Button>
+            <Button variant="outline" onClick={refreshValuation}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button>
+            <Button variant="outline"><Users className="mr-2 h-4 w-4" />Compare portfolio</Button>
+            {isOwner && <Button variant="destructive"><Trash2 className="mr-2 h-4 w-4" />Delete portfolio</Button>}
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card>
+            <CardHeader><CardTitle>Performance</CardTitle></CardHeader>
+            <CardContent>
+              <Badge variant="secondary">Value</Badge>
+              <p className="mt-2">{formatCurrency(portfolioValue, data.portfolio.base_currency || "USD")}</p>
+            </CardContent>
+          </Card>
+          <PortfolioHealthPanel scores={healthScores} />
+        </div>
+
+        <Tabs defaultValue="holdings">
+          <TabsList>
+            <TabsTrigger value="holdings">Holdings</TabsTrigger>
+            <TabsTrigger value="transactions">Transactions</TabsTrigger>
+            <TabsTrigger value="compare">Compare</TabsTrigger>
+            <TabsTrigger value="analysis">Analysis</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="holdings" className="space-y-3">
+            {(data.holdings || []).length === 0 ? (
+              <EmptyState title="No holdings in this portfolio yet" message="Import holdings or add your first position to get started." />
+            ) : (
+              <HoldingsTable
+                holdings={data.holdings || []}
+                baseCurrency={data.portfolio.base_currency || "USD"}
+                isOwner={isOwner}
+                onBuy={(asset: any) => {
+                  setResolveAsset(asset);
+                  setTradeType("buy");
+                }}
+                onSell={(asset: any) => {
+                  setResolveAsset(asset);
+                  setTradeType("sell");
+                }}
+                onDelete={() => Promise.resolve()}
+                onUpdate={() => Promise.resolve()}
+                onRefresh={async () => {
+                  await refetch();
+                }}
+              />
+            )}
+          </TabsContent>
+
+          <TabsContent value="transactions">
+            <TransactionsTable rows={data.transactions || []} />
+          </TabsContent>
+
+          <TabsContent value="compare">
+            <Card><CardHeader><CardTitle>Comparison</CardTitle></CardHeader><CardContent>Compare portfolio performance with peers.</CardContent></Card>
+          </TabsContent>
+
+          <TabsContent value="analysis" className="space-y-3">
+            <Card>
+              <CardHeader><CardTitle><Bot className="inline h-4 w-4 mr-2" />Analysis</CardTitle></CardHeader>
+              <CardContent>AI-powered portfolio insights.</CardContent>
+            </Card>
+            <PortfolioIntelligenceTable rows={[]} />
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      <ImportDialog open={showImport} onOpenChange={setShowImport} portfolioId={data.portfolio.id} onImported={() => void refetch()} />
+      <TransactionImportDialog open={showTxImport} onOpenChange={setShowTxImport} portfolioId={data.portfolio.id} onImported={() => void refetch()} />
+      <ResolveTickerDialog open={!!resolveAsset} onOpenChange={(open) => !open && setResolveAsset(null)} asset={resolveAsset} onResolved={() => void refetch()} />
+      <TradeModal open={!!tradeType} onOpenChange={(open) => !open && setTradeType(null)} portfolioId={data.portfolio.id} tradeType={tradeType || "buy"} asset={resolveAsset} onSaved={() => void refetch()} />
     </AppLayout>
   );
 }
