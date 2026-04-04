@@ -60,7 +60,7 @@ export default function PortfolioDetail() {
       const { data: portfolio } = await supabase.from("portfolios").select("*").eq("id", id!).single();
       const { data: auth } = await supabase.auth.getUser();
       const { data: holdings, count } = await supabase.from("holdings").select("*, asset:assets(*)", { count: "exact" }).eq("portfolio_id", id!).limit(400);
-      const { data: transactions } = await supabase.from("transactions" as any).select("*, asset:assets(symbol), user:profiles!inner(display_name)").eq("portfolio_id", id!).order("traded_at", { ascending: false }).limit(400);
+      const { data: transactions } = await supabase.from("transactions" as any).select("*, asset:assets(symbol), user:profiles(display_name)").eq("portfolio_id", id!).order("traded_at", { ascending: false }).limit(400);
       const { data: valuation } = await supabase.from("portfolio_valuations").select("total_value,as_of_date").eq("portfolio_id", id!).order("as_of_date", { ascending: false }).limit(1).maybeSingle();
       const assetIds = (holdings || []).map((h: any) => h.asset?.id).filter(Boolean);
       const { data: prices } = assetIds.length ? await supabase.from("prices").select("asset_id,price").in("asset_id", assetIds).order("as_of_date", { ascending: false }) : { data: [] as any[] };
