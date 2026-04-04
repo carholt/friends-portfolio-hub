@@ -9,10 +9,18 @@ ALTER TABLE public.profiles
 ALTER TABLE public.transactions
   ADD COLUMN IF NOT EXISTS user_id uuid;
 
-UPDATE public.transactions
-SET user_id = owner_user_id
-WHERE user_id IS NULL;
-
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'transactions'
+      AND column_name = 'owner_user_id'
+  ) THEN
+    EXECUTE 'UPDATE public.transactions SET user_id = owner_user_id WHERE user_id IS NULL';
+  END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -38,8 +46,8 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF NEW.user_id IS NULL THEN
-    NEW.user_id := NEW.owner_user_id;
+  IF NEW.user_id IS NULL AND to_jsonb(NEW) ? 'owner_user_id' THEN
+    NEW.user_id := NULLIF(to_jsonb(NEW)->>'owner_user_id', '')::uuid;
   END IF;
   RETURN NEW;
 END;
