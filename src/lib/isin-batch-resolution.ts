@@ -1,4 +1,4 @@
-import { supabase } from "@/integrations/supabase/client";
+import { supabase } from './supabaseClient'; // make sure your Supabase client import is correct
 
 const BATCH_URL = "https://hzcmnjpawiyxvscyzsto.supabase.co/functions/v1/resolve-isin-batch";
 const MAX_BATCH_SIZE = 50;
@@ -24,17 +24,20 @@ function chunk<T>(items: T[], size: number) {
 }
 
 async function fetchIsinBatch(isins: string[]) {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) {
-    throw new Error("Missing authenticated session for resolve-isin-batch");
+  const { data: sessionData } = await supabase.auth.getSession();
+
+  if (!sessionData?.session) {
+    throw new Error("No active Supabase session available for ISIN batch resolve");
   }
+
+  const token = sessionData.session.access_token;
 
   const res = await fetch(BATCH_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      "Authorization": `Bearer ${token}`,
+      "apikey": process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "" // or your server key if needed
     },
     body: JSON.stringify({ isins }),
   });
