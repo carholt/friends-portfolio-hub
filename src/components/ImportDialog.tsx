@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { parseDelimitedFile } from "@/lib/import-engine";
 import { detectHoldingsImportIssue } from "@/lib/import-guards";
 import { resolveIsin } from "@/lib/isin-resolution";
+import { resolveIsins } from "@/lib/isin-batch-resolution";
 
 type ImportFormat = "csv" | "json" | "xlsx";
 type ImportMode = "replace" | "merge";
@@ -101,6 +102,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
   }, [detectedNordea, resolverItems]);
 
   const resolveViaApi = useCallback(async (isin: string) => resolveIsin(isin), []);
+  const resolveBatchViaApi = useCallback(async (isins: string[]) => resolveIsins(isins), []);
 
   useEffect(() => {
     if (!detectedNordea || step !== 3 || resolverItems.length === 0) return;
@@ -110,16 +112,14 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
       const unresolvedItems = resolverItems.filter((item) => !tickerResolutions[item.isin]?.trim());
       if (unresolvedItems.length === 0) return;
 
-      const preResolved = await Promise.all(unresolvedItems.map(async (item) => {
-        const result = await resolveViaApi(item.isin);
-        return { isin: item.isin, result };
-      }));
+      const preResolved = await resolveBatchViaApi(unresolvedItems.map((item) => item.isin));
 
       if (!active) return;
 
       setTickerResolutions((prev) => {
         const next = { ...prev };
-        preResolved.forEach(({ isin, result }) => {
+        unresolvedItems.forEach(({ isin }) => {
+          const result = preResolved.get(String(isin || "").toUpperCase().trim());
           if (next[isin]?.trim()) return;
           if (result?.ticker) {
             next[isin] = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
@@ -130,7 +130,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
       setTickerSuggestions((prev) => {
         const next = { ...prev };
-        preResolved.forEach(({ isin, result }) => {
+        unresolvedItems.forEach(({ isin }) => {
+          const result = preResolved.get(String(isin || "").toUpperCase().trim());
           if (result?.ticker) {
             const formatted = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
             next[isin] = [formatted];
@@ -147,7 +148,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     return () => {
       active = false;
     };
-  }, [detectedNordea, resolveViaApi, resolverItems, step, tickerResolutions]);
+  }, [detectedNordea, resolveBatchViaApi, resolverItems, step, tickerResolutions]);
 
   const retryResolve = useCallback(async (isin: string) => {
     setResolverStatus((prev) => ({ ...prev, [isin]: "resolving" }));
@@ -290,44 +291,46 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     }
 
     let active = true;
-    const queue = [...uniqueSymbols];
-    const nordeaRowsByIsin = detectedNordea
-      ? new Map(uniqueSymbols.map((isin) => [isin, validRows.find((row) => String(row?.metadata_json?.isin ?? row.symbol ?? "").toUpperCase().trim() === isin)]))
-      : null;
     const nextState: Record<string, { status: SymbolResolutionStatus; reason?: string }> = {};
-    const workers = Array.from({ length: Math.min(4, queue.length) }).map(async () => {
-      while (queue.length) {
-        const symbol = queue.shift();
-        if (!symbol) break;
-        if (detectedNordea) {
-          const fallbackData = await resolveViaApi(symbol);
+    const runResolution = async () => {
+      if (detectedNordea) {
+        const batchResults = await resolveBatchViaApi(uniqueSymbols);
+        uniqueSymbols.forEach((symbol) => {
+          const fallbackData = batchResults.get(symbol);
           const resolvedTicker = fallbackData?.ticker
             ? formatResolvedTicker(String(fallbackData.ticker), String(fallbackData.exchange || ""))
             : "";
-          nextState[symbol] = resolvedTicker ? { status: "resolved" } : { status: "invalid", reason: String(fallbackData?.error || "no ticker suggestion") };
+          nextState[symbol] = resolvedTicker ? { status: "resolved" } : { status: "invalid", reason: "no ticker suggestion" };
           if (resolvedTicker) {
             setTickerResolutions((prev) => {
               if (prev[symbol]?.trim()) return prev;
               return { ...prev, [symbol]: resolvedTicker };
             });
           }
-          continue;
-        }
-
-        const { data } = await supabase.functions.invoke("resolve-symbol", { body: { symbol } });
-        const resolution = applyImportResolution(symbol, ((data?.candidates || []) as SymbolCandidate[]));
-        nextState[symbol] = { status: resolution.status, reason: resolution.reason };
+        });
+      } else {
+        const queue = [...uniqueSymbols];
+        const workers = Array.from({ length: Math.min(4, queue.length) }).map(async () => {
+          while (queue.length) {
+            const symbol = queue.shift();
+            if (!symbol) break;
+            const { data } = await supabase.functions.invoke("resolve-symbol", { body: { symbol } });
+            const resolution = applyImportResolution(symbol, ((data?.candidates || []) as SymbolCandidate[]));
+            nextState[symbol] = { status: resolution.status, reason: resolution.reason };
+          }
+        });
+        await Promise.all(workers);
       }
-    });
+    };
 
-    Promise.all(workers).then(() => {
+    runResolution().then(() => {
       if (active) setPreviewResolution(nextState);
     });
 
     return () => {
       active = false;
     };
-  }, [detectedNordea, resolveViaApi, validRows]);
+  }, [detectedNordea, resolveBatchViaApi, validRows]);
 
   const runImport = async () => {
     setBusy(true);
@@ -450,21 +453,32 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
 
     let active = true;
     const runPass = async () => {
-      await Promise.all(resolverItems.map(async (item) => {
+      const unresolvedItems = resolverItems.filter((item) => !tickerResolutions[item.isin]?.trim());
+      const alreadyResolvedItems = resolverItems.filter((item) => tickerResolutions[item.isin]?.trim());
+
+      alreadyResolvedItems.forEach((item) => {
         const existingTicker = tickerResolutions[item.isin]?.trim();
-        if (existingTicker) {
-          if (!active) return;
-          setResolverStatus((prev) => ({ ...prev, [item.isin]: "resolved" }));
-          setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [existingTicker] }));
-          return;
-        }
+        if (!existingTicker) return;
+        setResolverStatus((prev) => ({ ...prev, [item.isin]: "resolved" }));
+        setTickerSuggestions((prev) => ({ ...prev, [item.isin]: [existingTicker] }));
+      });
 
-        if (!active) return;
-        setResolverStatus((prev) => ({ ...prev, [item.isin]: "resolving" }));
-        setResolverErrors((prev) => ({ ...prev, [item.isin]: "" }));
-        const result = await resolveViaApi(item.isin);
-        if (!active) return;
+      if (unresolvedItems.length === 0 || !active) return;
 
+      setResolverStatus((prev) => ({
+        ...prev,
+        ...Object.fromEntries(unresolvedItems.map((item) => [item.isin, "resolving"] as const)),
+      }));
+      setResolverErrors((prev) => ({
+        ...prev,
+        ...Object.fromEntries(unresolvedItems.map((item) => [item.isin, ""] as const)),
+      }));
+
+      const batchResults = await resolveBatchViaApi(unresolvedItems.map((item) => item.isin));
+      if (!active) return;
+
+      unresolvedItems.forEach((item) => {
+        const result = batchResults.get(String(item.isin || "").toUpperCase().trim());
         if (result?.ticker) {
           const formatted = formatResolvedTicker(String(result.ticker), String(result.exchange || ""));
           setTickerResolutions((prev) => ({ ...prev, [item.isin]: formatted }));
@@ -474,8 +488,8 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         }
 
         setResolverStatus((prev) => ({ ...prev, [item.isin]: "manual_required" }));
-        setResolverErrors((prev) => ({ ...prev, [item.isin]: String(result?.error || "unresolved") }));
-      }));
+        setResolverErrors((prev) => ({ ...prev, [item.isin]: "unresolved" }));
+      });
     };
 
     runPass().catch(() => {
@@ -485,7 +499,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     return () => {
       active = false;
     };
-  }, [detectedNordea, resolverItems, resolveViaApi, step, tickerResolutions]);
+  }, [detectedNordea, resolverItems, resolveBatchViaApi, step, tickerResolutions]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetImport(); }}>
