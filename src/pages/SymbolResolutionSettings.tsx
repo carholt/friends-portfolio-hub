@@ -25,12 +25,23 @@ type AliasRow = {
 };
 
 type InstrumentRow = { id: string; price_symbol: string; canonical_symbol: string; exchange_code: string | null };
+type IsinMappingRow = {
+  id: string;
+  isin: string;
+  ticker: string | null;
+  name: string | null;
+  exchange: string | null;
+  source: string | null;
+  created_at: string | null;
+};
 
 export default function SymbolResolutionSettingsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
+  const [mappingSearch, setMappingSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "overridden" | "low" | "inactive">("all");
   const [draft, setDraft] = useState({ raw_symbol: "", exchange: "", broker: "", isin: "", canonical_symbol: "", price_symbol: "", confidence: "0.99" });
+  const [mappingDraft, setMappingDraft] = useState({ isin: "", ticker: "", exchange: "", name: "", source: "manual_override" });
 
   const { data: aliases = [], isLoading } = useQuery({
     queryKey: ["symbol-aliases"],
@@ -54,6 +65,19 @@ export default function SymbolResolutionSettingsPage() {
         .limit(500);
       if (error) throw error;
       return (data || []) as InstrumentRow[];
+    },
+  });
+
+  const { data: isinMappings = [], isLoading: isLoadingMappings } = useQuery({
+    queryKey: ["instrument-mappings"],
+    queryFn: async () => {
+      const { data, error } = await (supabase as any)
+        .from("instrument_mappings")
+        .select("id,isin,ticker,name,exchange,source,created_at")
+        .order("created_at", { ascending: false })
+        .limit(500);
+      if (error) throw error;
+      return (data || []) as IsinMappingRow[];
     },
   });
 
@@ -131,6 +155,32 @@ export default function SymbolResolutionSettingsPage() {
     onSuccess: (data) => toast.success(`Preview returned ${(data || []).length} candidate(s)`),
   });
 
+  const saveMappingMutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        isin: mappingDraft.isin.trim().toUpperCase(),
+        ticker: mappingDraft.ticker.trim().toUpperCase() || null,
+        exchange: mappingDraft.exchange.trim().toUpperCase() || null,
+        name: mappingDraft.name.trim() || null,
+        source: mappingDraft.source.trim().toLowerCase() || "manual_override",
+      };
+
+      if (!payload.isin) throw new Error("ISIN is required");
+      if (!payload.ticker) throw new Error("Ticker is required");
+
+      const { error } = await (supabase as any)
+        .from("instrument_mappings")
+        .upsert(payload, { onConflict: "isin" });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("ISIN mapping saved");
+      queryClient.invalidateQueries({ queryKey: ["instrument-mappings"] });
+      setMappingDraft({ isin: "", ticker: "", exchange: "", name: "", source: "manual_override" });
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Could not save ISIN mapping"),
+  });
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return aliases.filter((row) => {
@@ -143,10 +193,63 @@ export default function SymbolResolutionSettingsPage() {
     });
   }, [aliases, filter, search]);
 
+  const filteredMappings = useMemo(() => {
+    const q = mappingSearch.trim().toLowerCase();
+    if (!q) return isinMappings;
+    return isinMappings.filter((row) =>
+      [row.isin, row.ticker || "", row.exchange || "", row.name || "", row.source || ""]
+        .some((value) => value.toLowerCase().includes(q)),
+    );
+  }, [isinMappings, mappingSearch]);
+
   return (
     <AppLayout>
       <div className="space-y-4">
         <h1 className="text-2xl font-bold">Symbol resolution</h1>
+
+        <Card>
+          <CardHeader><CardTitle>ISIN ↔ ticker mapping (internal cache)</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+              <Input placeholder="ISIN" value={mappingDraft.isin} onChange={(e) => setMappingDraft((p) => ({ ...p, isin: e.target.value }))} />
+              <Input placeholder="Ticker" value={mappingDraft.ticker} onChange={(e) => setMappingDraft((p) => ({ ...p, ticker: e.target.value }))} />
+              <Input placeholder="Exchange (TSXV/TSX/AMEX)" value={mappingDraft.exchange} onChange={(e) => setMappingDraft((p) => ({ ...p, exchange: e.target.value }))} />
+              <Input placeholder="Company name" value={mappingDraft.name} onChange={(e) => setMappingDraft((p) => ({ ...p, name: e.target.value }))} />
+              <Input placeholder="Source" value={mappingDraft.source} onChange={(e) => setMappingDraft((p) => ({ ...p, source: e.target.value }))} />
+              <Button onClick={() => saveMappingMutation.mutate()} disabled={saveMappingMutation.isPending}>Save mapping</Button>
+            </div>
+
+            <Input
+              className="max-w-sm"
+              placeholder="Search ISIN/ticker/name/exchange"
+              value={mappingSearch}
+              onChange={(e) => setMappingSearch(e.target.value)}
+            />
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ISIN</TableHead>
+                  <TableHead>Ticker</TableHead>
+                  <TableHead>Exchange</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Source</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!isLoadingMappings && filteredMappings.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{row.isin}</TableCell>
+                    <TableCell>{row.ticker || "—"}</TableCell>
+                    <TableCell>{row.exchange || "—"}</TableCell>
+                    <TableCell>{row.name || "—"}</TableCell>
+                    <TableCell>{row.source || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader><CardTitle>Create manual override</CardTitle></CardHeader>
