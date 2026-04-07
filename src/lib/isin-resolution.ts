@@ -1,7 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
 
-const RESOLVE_ISIN_URL = "https://hzcmnjpawiyxvscyzsto.supabase.co/functions/v1/resolve-isin";
-
 export interface ResolveIsinResponse {
   isin: string;
   ticker: string | null;
@@ -19,41 +17,20 @@ export async function resolveIsin(isin: string): Promise<ResolveIsinResponse> {
     return isinCache.get(normalizedIsin)!;
   }
 
-  const promise = supabase.auth.getSession().then(async ({ data: { session } }) => {
-    if (!session?.access_token) {
+  const promise = supabase.functions.invoke("resolve-isin", { body: { isin: normalizedIsin } }).then(({ data, error }) => {
+    if (error) {
       return {
         isin: normalizedIsin,
         ticker: null,
         exchange: null,
-        error: "Missing authenticated session",
+        error: error.message || "resolve-isin invoke failed",
       };
     }
-
-    const res = await fetch(RESOLVE_ISIN_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${session.access_token}`,
-        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({ isin: normalizedIsin }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      return {
-        isin: normalizedIsin,
-        ticker: null,
-        exchange: null,
-        error: data?.error || `resolve-isin failed: ${res.status}`,
-      };
-    }
-
     return {
       isin: String(data?.isin || normalizedIsin),
       ticker: data?.ticker ? String(data.ticker) : null,
       exchange: data?.exchange ? String(data.exchange) : null,
+      error: data?.error ? String(data.error) : undefined,
     };
   }).catch((error: unknown) => ({
     isin: normalizedIsin,
