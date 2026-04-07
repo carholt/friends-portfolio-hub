@@ -1,6 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
 
-const BATCH_URL = "https://hzcmnjpawiyxvscyzsto.supabase.co/functions/v1/resolve-isin-batch";
 const MAX_BATCH_SIZE = 50;
 const MAX_ISINS_PER_IMPORT = 100;
 
@@ -24,30 +23,15 @@ function chunk<T>(items: T[], size: number) {
 }
 
 async function fetchIsinBatch(isins: string[]) {
-  const { data: sessionData } = await supabase.auth.getSession();
-
-  if (!sessionData?.session) {
-    throw new Error("No active Supabase session available for ISIN batch resolve");
-  }
-
-  const token = sessionData.session.access_token;
-
-  const res = await fetch(BATCH_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`,
-      "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY,
-    },
-    body: JSON.stringify({ isins }),
+  const { data, error } = await supabase.functions.invoke("resolve-isin-batch", {
+    body: { isins },
   });
 
-  if (!res.ok) {
-    throw new Error(`Batch resolve failed: ${res.status}`);
+  if (error) {
+    throw new Error(error.message || "Batch resolve failed");
   }
 
-  const data = (await res.json()) as ResolveIsinBatchRow[];
-  return Array.isArray(data) ? data : [];
+  return Array.isArray(data) ? (data as ResolveIsinBatchRow[]) : [];
 }
 
 export async function resolveIsins(isins: string[]) {
