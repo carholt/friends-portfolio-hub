@@ -43,7 +43,10 @@ export function ImportJobPanel({ jobId }: { jobId: string | null | undefined }) 
 
   const retryJob = async () => {
     if (!job) return;
-    const { error: updateError } = await supabase.from("import_jobs").update({ status: "queued", error: null, retry_count: 0 }).eq("id", job.id);
+    const { error: updateError } = await supabase
+      .from("import_jobs")
+      .update({ status: "queued", error: null, retry_at: null, failed_at: null, locked_at: null, locked_by: null })
+      .eq("id", job.id);
     if (updateError) return toast.error(`Could not retry job: ${updateError.message}`);
     toast.success("Import job re-queued.");
     refetch();

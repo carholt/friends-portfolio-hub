@@ -102,7 +102,7 @@ Deno.serve(async (req) => {
         instrument_id: string;
         price: number;
         currency: string;
-        price_date: string;
+        price_timestamp: string;
         source: string;
         updated_at: string;
       }> = [];
@@ -121,7 +121,7 @@ Deno.serve(async (req) => {
             instrument_id: instrument.id,
             price: parsedPrice,
             currency: (payload.currency ?? instrument.currency ?? "USD").toUpperCase(),
-            price_date: new Date().toISOString().slice(0, 10),
+            price_timestamp: new Date().toISOString(),
             source: instrument.provider ?? "twelve_data",
             updated_at: new Date().toISOString(),
           });
