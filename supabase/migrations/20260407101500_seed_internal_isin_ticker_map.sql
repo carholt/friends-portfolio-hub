@@ -1,4 +1,3 @@
--- Seed curated ISIN → ticker mappings for mining-focused symbols.
 INSERT INTO public.instrument_mappings (isin, ticker, name, exchange, source)
 VALUES
   ('CA40066W1068', 'GSVR.V', 'Guanajuato Silver', 'TSXV', 'manual_seed'),
@@ -10,7 +9,7 @@ VALUES
   ('CA8283411079', 'AGX.V', 'Silver X Mining', 'TSXV', 'manual_seed'),
   ('CA89901T1093', 'TUD.V', 'Tudor Gold', 'TSXV', 'manual_seed'),
   ('CA1651841027', 'CKG.V', 'Chesapeake Gold', 'TSXV', 'manual_seed'),
-  ('CA65442J1075', 'AUMB.V', '1911 Gold', 'TSXV', 'manual_seed'),
+  ('CA65442J1075', 'AUMC.V', '1911 Gold', 'TSXV', 'manual_seed'), -- FIXED
   ('CA36258E1025', 'GRSL.V', 'GR Silver Mining', 'TSXV', 'manual_seed'),
   ('CA8280425072', 'AGMR.V', 'Silver Mountain Resources', 'TSXV', 'manual_seed'),
   ('CA8438142033', 'SSV.V', 'Southern Silver Exploration', 'TSXV', 'manual_seed')
