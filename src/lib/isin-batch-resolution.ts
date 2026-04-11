@@ -1,5 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 
+// Used only for enrichment, not blocking import.
 const MAX_BATCH_SIZE = 50;
 const MAX_ISINS_PER_IMPORT = 100;
 
