@@ -1,3 +1,6 @@
+import * as XLSX from "xlsx";
+import { supabase } from "@/integrations/supabase/client";
+
 export type ImportKind = "transactions" | "holdings" | "unknown";
 export type BrokerKey = "nordea" | "avanza" | "interactive_brokers" | "degiro" | "unknown";
 
@@ -208,3 +211,119 @@ export const recomputeAvgCost = (transactions: Array<{ trade_type: string; quant
   }
   return { quantity, avg_cost: quantity > 0 ? costBasis / quantity : 0 };
 };
+
+export interface ImportExecutionSummary {
+  inserted: number;
+  skipped: number;
+  unresolved: string[];
+}
+
+const normalizeForImport = (value: unknown) => String(value ?? "").trim();
+const normalizeImportNumber = (value: unknown) => {
+  const normalized = normalizeForImport(value).replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+async function resolveTickerFromIsin(isin: string | null, name: string) {
+  if (!isin) return { ticker: name, unresolved: false };
+  const { data, error } = await supabase
+    .from("instrument_mappings")
+    .select("ticker")
+    .eq("isin", isin)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (data?.ticker) return { ticker: String(data.ticker).toUpperCase(), unresolved: false };
+  return { ticker: name, unresolved: true };
+}
+
+async function ensureAsset(ticker: string, name: string, currency: string | null) {
+  const { data: existing, error: existingError } = await supabase
+    .from("assets")
+    .select("id")
+    .eq("symbol", ticker)
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing?.id) return String(existing.id);
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("assets")
+    .insert({
+      symbol: ticker,
+      name: name || ticker,
+      currency: currency || "SEK",
+    })
+    .select("id")
+    .single();
+  if (insertError) throw insertError;
+  return String(inserted.id);
+}
+
+export async function importHoldingsFromXlsx(
+  portfolioId: string,
+  fileData: ArrayBuffer
+): Promise<ImportExecutionSummary> {
+  const workbook = XLSX.read(fileData, { type: "array" });
+  const sheet = workbook.Sheets["Holdings"];
+  if (!sheet) return { inserted: 0, skipped: 0, unresolved: [] };
+
+  const rows = XLSX.utils.sheet_to_json<Array<unknown>>(sheet, { header: 1, raw: false });
+  const dataRows = rows.slice(1);
+  const unresolved = new Set<string>();
+  let skipped = 0;
+  let inserted = 0;
+
+  for (const row of dataRows) {
+    const isin = normalizeForImport(row[0]).toUpperCase() || null;
+    const name = normalizeForImport(row[1]);
+    const quantity = normalizeImportNumber(row[2]);
+    const avgCost = normalizeImportNumber(row[3]);
+    const currency = normalizeForImport(row[4]).toUpperCase() || null;
+    if (!name || quantity === 0) {
+      skipped += 1;
+      continue;
+    }
+
+    const resolved = await resolveTickerFromIsin(isin, name);
+    if (resolved.unresolved && isin) unresolved.add(isin);
+    const assetId = await ensureAsset(resolved.ticker, name, currency);
+
+    const { error } = await supabase
+      .from("holdings")
+      .upsert(
+        {
+          portfolio_id: portfolioId,
+          asset_id: assetId,
+          quantity,
+          avg_cost: avgCost,
+          cost_currency: currency || "SEK",
+        },
+        { onConflict: "portfolio_id,asset_id" }
+      );
+    if (error) throw error;
+    inserted += 1;
+  }
+
+  return { inserted, skipped, unresolved: Array.from(unresolved) };
+}
+
+export async function runImportPipeline(
+  portfolioId: string,
+  file: File,
+  fileData: ArrayBuffer | string
+): Promise<ImportExecutionSummary> {
+  const name = file.name.toLowerCase();
+
+  if (name.endsWith(".csv")) {
+    const mod = await import("@/lib/transaction-import");
+    return mod.importAvanzaTransactionsCsv(portfolioId, String(fileData));
+  }
+
+  if (name.endsWith(".xlsx")) {
+    return importHoldingsFromXlsx(portfolioId, fileData as ArrayBuffer);
+  }
+
+  return { inserted: 0, skipped: 0, unresolved: [] };
+}

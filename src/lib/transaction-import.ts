@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import { detectMapping, mapExchangeToPriceSymbol, parseDelimitedFile, parseNumberByLocale, type ImportMapping } from "@/lib/import-engine";
+import { supabase } from "@/integrations/supabase/client";
 
 export type NormalizedTransactionType = "buy" | "sell" | "dividend" | "fee" | "fx" | "unknown";
 export type BrokerKind = "nordea" | "avanza" | "unknown";
@@ -276,4 +277,181 @@ export function buildPreviewRows(
       duplicateKey,
     };
   });
+}
+
+export interface OfflineImportSummary {
+  inserted: number;
+  skipped: number;
+  unresolved: string[];
+}
+
+type ImportedTransactionType = "BUY" | "SELL" | "DIVIDEND" | "DEPOSIT" | "WITHDRAWAL";
+
+interface AvanzaCsvRow {
+  date: string;
+  type: string;
+  name: string;
+  isin: string;
+  quantity: string;
+  price: string;
+  amount: string;
+  currency: string;
+}
+
+const mapAvanzaType = (value: string): ImportedTransactionType | null => {
+  const normalized = normalize(value).toLowerCase();
+  if (normalized === "köp") return "BUY";
+  if (normalized === "sälj") return "SELL";
+  if (normalized === "utdelning") return "DIVIDEND";
+  if (normalized === "insättning") return "DEPOSIT";
+  if (normalized === "uttag") return "WITHDRAWAL";
+  if (normalized === "autogiroinsättning") return "DEPOSIT";
+  return null;
+};
+
+const normalizeCsvNumber = (value: unknown): number => {
+  const normalized = normalize(value).replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeIsin = (value: unknown) => normalize(value).toUpperCase();
+
+const ensureAssets = async (
+  rows: Array<{ ticker: string; name: string; currency: string | null }>
+) => {
+  const tickers = Array.from(new Set(rows.map((row) => row.ticker).filter(Boolean)));
+  if (tickers.length === 0) return new Map<string, string>();
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("assets")
+    .select("id, symbol")
+    .in("symbol", tickers);
+  if (fetchError) throw fetchError;
+
+  const map = new Map<string, string>();
+  for (const asset of existing ?? []) {
+    map.set(String(asset.symbol), String(asset.id));
+  }
+
+  const missing = rows.filter((row) => !map.has(row.ticker));
+  if (missing.length) {
+    const uniqueMissing = Array.from(new Map(missing.map((row) => [row.ticker, row])).values());
+    const { data: inserted, error: insertError } = await supabase
+      .from("assets")
+      .upsert(
+        uniqueMissing.map((row) => ({
+          symbol: row.ticker,
+          name: row.name || row.ticker,
+          currency: row.currency || "SEK",
+        })),
+        { onConflict: "symbol" }
+      )
+      .select("id, symbol");
+    if (insertError) throw insertError;
+
+    for (const asset of inserted ?? []) {
+      map.set(String(asset.symbol), String(asset.id));
+    }
+  }
+
+  return map;
+};
+
+export async function importAvanzaTransactionsCsv(
+  portfolioId: string,
+  csvContent: string
+): Promise<OfflineImportSummary> {
+  const parsed = parseDelimitedFile(csvContent);
+  const rows = parsed.rows as unknown as AvanzaCsvRow[];
+  const unresolved = new Set<string>();
+  const isins = Array.from(new Set(rows.map((row) => normalizeIsin(row.isin)).filter(Boolean)));
+
+  const isinToTicker = new Map<string, string>();
+  if (isins.length > 0) {
+    const { data, error } = await supabase
+      .from("instrument_mappings")
+      .select("isin, ticker")
+      .in("isin", isins);
+    if (error) throw error;
+
+    for (const item of data ?? []) {
+      const isin = normalizeIsin(item.isin);
+      const ticker = normalize(item.ticker).toUpperCase();
+      if (isin && ticker) isinToTicker.set(isin, ticker);
+    }
+  }
+
+  const normalizedRows = rows.map((row) => {
+    const name = normalize((row as Record<string, string>)["namn"] ?? row.name);
+    const isin = normalizeIsin((row as Record<string, string>)["isin"] ?? row.isin);
+    const ticker = isin ? (isinToTicker.get(isin) ?? name) : name;
+    if (isin && !isinToTicker.has(isin)) unresolved.add(isin);
+
+    return {
+      traded_at: parseDate((row as Record<string, string>)["datum"] ?? row.date, "sv_date"),
+      trade_type: mapAvanzaType((row as Record<string, string>)["typ av transaktion"] ?? row.type),
+      quantity: normalizeCsvNumber((row as Record<string, string>)["antal"] ?? row.quantity),
+      price: normalizeCsvNumber((row as Record<string, string>)["pris"] ?? row.price),
+      amount: normalizeCsvNumber((row as Record<string, string>)["belopp"] ?? row.amount),
+      currency: normalize((row as Record<string, string>)["valuta"] ?? row.currency).toUpperCase() || null,
+      name,
+      isin: isin || null,
+      ticker: ticker.toUpperCase(),
+    };
+  });
+
+  const validRows = normalizedRows.filter((row) => row.trade_type && row.traded_at && row.ticker);
+  const skipped = normalizedRows.length - validRows.length;
+  const assets = await ensureAssets(validRows.map((row) => ({ ticker: row.ticker, name: row.name, currency: row.currency })));
+
+  const payload = validRows
+    .map((row) => {
+      const assetId = assets.get(row.ticker);
+      if (!assetId) return null;
+
+      const txBase = {
+        broker: "avanza",
+        trade_type: String(row.trade_type).toLowerCase(),
+        symbol_raw: row.ticker,
+        isin: row.isin,
+        exchange_code: null as string | null,
+        traded_at: row.traded_at,
+        quantity: row.quantity,
+        price: row.price || null,
+        currency: row.currency,
+        fees: null as number | null,
+      };
+
+      return {
+        portfolio_id: portfolioId,
+        asset_id: assetId,
+        broker: "avanza",
+        trade_type: String(row.trade_type).toLowerCase(),
+        symbol_raw: row.ticker,
+        isin: row.isin,
+        traded_at: row.traded_at,
+        quantity: row.quantity,
+        price: row.price || null,
+        currency: row.currency,
+        stable_hash: computeStableHashFromNormalizedFields(txBase),
+      };
+    })
+    .filter(Boolean);
+
+  if (payload.length === 0) {
+    return { inserted: 0, skipped: normalizedRows.length, unresolved: Array.from(unresolved) };
+  }
+
+  const { data, error } = await supabase
+    .from("transactions")
+    .upsert(payload as never, { onConflict: "portfolio_id,broker,stable_hash" })
+    .select("id");
+  if (error) throw error;
+
+  return {
+    inserted: (data ?? []).length,
+    skipped,
+    unresolved: Array.from(unresolved),
+  };
 }
