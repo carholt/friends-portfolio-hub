@@ -219,23 +219,27 @@ export interface ImportExecutionSummary {
 }
 
 const normalizeForImport = (value: unknown) => String(value ?? "").trim();
-const normalizeImportNumber = (value: unknown) => {
-  const normalized = normalizeForImport(value).replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
+function parseNumber(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 async function resolveTickerFromIsin(isin: string | null, name: string) {
-  if (!isin) return { ticker: name, unresolved: false };
-  const { data, error } = await supabase
-    .from("instrument_mappings")
-    .select("ticker")
-    .eq("isin", isin)
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  if (data?.ticker) return { ticker: String(data.ticker).toUpperCase(), unresolved: false };
-  return { ticker: name, unresolved: true };
+  if (isin) {
+    const { data: mapping } = await supabase
+      .from("instrument_mappings")
+      .select("ticker")
+      .eq("isin", isin)
+      .maybeSingle();
+    if (mapping?.ticker) {
+      return { ticker: String(mapping.ticker).toUpperCase(), unresolved: false };
+    }
+  }
+  return {
+    ticker: name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10),
+    unresolved: true,
+  };
 }
 
 async function ensureAsset(ticker: string, name: string, currency: string | null) {
@@ -270,43 +274,56 @@ export async function importHoldingsFromXlsx(
   if (!sheet) return { inserted: 0, skipped: 0, unresolved: [] };
 
   const rows = XLSX.utils.sheet_to_json<Array<unknown>>(sheet, { header: 1, raw: false });
-  const dataRows = rows.slice(1);
+  const dataRows = rows.slice(2);
   const unresolved = new Set<string>();
   let skipped = 0;
   let inserted = 0;
 
   for (const row of dataRows) {
-    const isin = normalizeForImport(row[0]).toUpperCase() || null;
-    const name = normalizeForImport(row[1]);
-    const quantity = normalizeImportNumber(row[2]);
-    const avgCost = normalizeImportNumber(row[3]);
-    const currency = normalizeForImport(row[4]).toUpperCase() || null;
-    if (!name || quantity === 0) {
+    try {
+      const isin = normalizeForImport(row[8]).toUpperCase() || null;
+      const currency = normalizeForImport(row[10]).toUpperCase() || null;
+      const name = normalizeForImport(row[11]);
+      const quantity = parseNumber(normalizeForImport(row[12]));
+      const price = parseNumber(normalizeForImport(row[13]));
+
+      if (!name || quantity === null || quantity === 0) {
+        skipped += 1;
+        continue;
+      }
+
+      const resolved = await resolveTickerFromIsin(isin, name);
+      if (resolved.unresolved) unresolved.add(isin || name);
+
+      const assetId = await ensureAsset(resolved.ticker, name, currency);
+
+      const { error } = await supabase
+        .from("holdings")
+        .upsert(
+          {
+            portfolio_id: portfolioId,
+            asset_id: assetId,
+            quantity,
+            avg_cost: price ?? 0,
+            cost_currency: currency || "SEK",
+          },
+          { onConflict: "portfolio_id,asset_id" }
+        );
+      if (error) throw error;
+      inserted += 1;
+    } catch (error) {
+      console.error("Holdings row import error:", error);
       skipped += 1;
-      continue;
     }
-
-    const resolved = await resolveTickerFromIsin(isin, name);
-    if (resolved.unresolved && isin) unresolved.add(isin);
-    const assetId = await ensureAsset(resolved.ticker, name, currency);
-
-    const { error } = await supabase
-      .from("holdings")
-      .upsert(
-        {
-          portfolio_id: portfolioId,
-          asset_id: assetId,
-          quantity,
-          avg_cost: avgCost,
-          cost_currency: currency || "SEK",
-        },
-        { onConflict: "portfolio_id,asset_id" }
-      );
-    if (error) throw error;
-    inserted += 1;
   }
 
-  return { inserted, skipped, unresolved: Array.from(unresolved) };
+  const result = { inserted, skipped, unresolved: Array.from(unresolved) };
+  console.log("Import summary:", {
+    inserted,
+    skipped,
+    unresolvedCount: result.unresolved.length,
+  });
+  return result;
 }
 
 export async function runImportPipeline(
