@@ -12,7 +12,7 @@ export async function importTransactionsBatch(
   rows: ParsedImportPreviewRow[]
 ): Promise<ImportTransactionsBatchSummary> {
   // Offline-safe note: this import path only sends already-parsed rows to Postgres RPC.
-  // It does not call resolveIsins / resolve-isin-batch edge functions.
+  // It does not call any ticker-resolution edge functions.
   const payload = rows.map(({ tx }) => ({
     broker: tx.broker,
     trade_id: tx.trade_id,
