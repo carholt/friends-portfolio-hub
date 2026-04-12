@@ -316,6 +316,13 @@ function parseNumber(value: string | undefined): number | null {
 
 const normalizeIsin = (value: unknown) => normalize(value).toUpperCase();
 
+const toDeterministicSymbol = (name: string) => {
+  const cleaned = String(name || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (cleaned) return cleaned;
+  const fallback = String(name || "").trim().toUpperCase();
+  return fallback || "UNKNOWN";
+};
+
 export async function importAvanzaTransactionsCsv(
   portfolioId: string,
   csvContent: string
@@ -395,12 +402,12 @@ export async function importAvanzaTransactionsCsv(
         }
       }
       if (!ticker) {
-        ticker = name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+        ticker = toDeterministicSymbol(name);
         unresolved.add(isin || name);
       }
     } catch (error) {
       console.error("ISIN resolution error:", error);
-      ticker = name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+      ticker = toDeterministicSymbol(name);
       unresolved.add(isin || name);
     }
 

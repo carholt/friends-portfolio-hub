@@ -219,6 +219,14 @@ export interface ImportExecutionSummary {
 }
 
 const normalizeForImport = (value: unknown) => String(value ?? "").trim();
+
+const toDeterministicSymbol = (name: string) => {
+  const cleaned = String(name || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (cleaned) return cleaned;
+  const fallback = String(name || "").trim().toUpperCase();
+  return fallback || "UNKNOWN";
+};
+
 function parseNumber(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
@@ -237,7 +245,7 @@ async function resolveTickerFromIsin(isin: string | null, name: string) {
     }
   }
   return {
-    ticker: name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10),
+    ticker: toDeterministicSymbol(name),
     unresolved: true,
   };
 }

@@ -17,27 +17,32 @@ export async function resolveIsin(isin: string): Promise<ResolveIsinResponse> {
     return isinCache.get(normalizedIsin)!;
   }
 
-  const promise = supabase.functions.invoke("resolve-isin", { body: { isin: normalizedIsin } }).then(({ data, error }) => {
-    if (error) {
+  const promise = supabase
+    .from("instrument_mappings")
+    .select("ticker,exchange")
+    .eq("isin", normalizedIsin)
+    .maybeSingle()
+    .then(({ data, error }) => {
+      if (error) {
+        return {
+          isin: normalizedIsin,
+          ticker: null,
+          exchange: null,
+          error: error.message || "local lookup failed",
+        };
+      }
       return {
         isin: normalizedIsin,
-        ticker: null,
-        exchange: null,
-        error: error.message || "resolve-isin invoke failed",
+        ticker: data?.ticker ? String(data.ticker).toUpperCase() : null,
+        exchange: data?.exchange ? String(data.exchange).toUpperCase() : null,
       };
-    }
-    return {
-      isin: String(data?.isin || normalizedIsin),
-      ticker: data?.ticker ? String(data.ticker) : null,
-      exchange: data?.exchange ? String(data.exchange) : null,
-      error: data?.error ? String(data.error) : undefined,
-    };
-  }).catch((error: unknown) => ({
-    isin: normalizedIsin,
-    ticker: null,
-    exchange: null,
-    error: error instanceof Error ? error.message : "lookup_failed",
-  }));
+    })
+    .catch((error: unknown) => ({
+      isin: normalizedIsin,
+      ticker: null,
+      exchange: null,
+      error: error instanceof Error ? error.message : "lookup_failed",
+    }));
 
   isinCache.set(normalizedIsin, promise);
   return promise;
