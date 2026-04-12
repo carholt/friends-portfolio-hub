@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import { supabase } from "@/integrations/supabase/client";
+import { buildAssetIdentifier } from "@/lib/asset-identifier";
 
 export type ImportKind = "transactions" | "holdings" | "unknown";
 export type BrokerKey = "nordea" | "avanza" | "interactive_brokers" | "degiro" | "unknown";
@@ -153,10 +154,10 @@ export const detectMapping = (
   let confidence = 0.65;
   if (kind !== "unknown") confidence += 0.1;
   if (broker_key !== "unknown") confidence += 0.1;
-  if (columns.symbol) confidence += 0.08;
+  if (columns.isin || columns.name || columns.symbol) confidence += 0.08;
   if (columns.date) confidence += 0.07;
 
-  if (!columns.symbol) questions.push("Which column is the ticker/symbol?");
+  if (!columns.isin && !columns.name && !columns.symbol) questions.push("Which column contains ISIN or asset name?");
   if (!columns.exchange && kind === "transactions") questions.push("Which exchange is this?");
   if (!columns.quantity) questions.push("Could not parse quantity column. Which column should be quantity?");
 
@@ -215,57 +216,44 @@ export const recomputeAvgCost = (transactions: Array<{ trade_type: string; quant
 export interface ImportExecutionSummary {
   inserted: number;
   skipped: number;
-  unresolved: string[];
+  fallback: number;
 }
 
 const normalizeForImport = (value: unknown) => String(value ?? "").trim();
 
-const toDeterministicSymbol = (name: string) => {
-  const cleaned = String(name || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  if (cleaned) return cleaned;
-  const fallback = String(name || "").trim().toUpperCase();
-  return fallback || "UNKNOWN";
-};
-
 function parseNumber(value: string | undefined): number | null {
   if (!value) return null;
-  const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
+  const parsed = Number(value.replace(/\s/g, "").replace(/\.(?=.*[,])/g, "").replace(",", "."));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function resolveTickerFromIsin(isin: string | null, name: string) {
+async function ensureAsset(isin: string | null, name: string | null, identifier: string) {
   if (isin) {
-    const { data: mapping } = await supabase
-      .from("instrument_mappings")
-      .select("ticker")
+    const { data: byIsin, error: byIsinError } = await supabase
+      .from("assets")
+      .select("id")
       .eq("isin", isin)
+      .limit(1)
       .maybeSingle();
-    if (mapping?.ticker) {
-      return { ticker: String(mapping.ticker).toUpperCase(), unresolved: false };
-    }
+    if (byIsinError) throw byIsinError;
+    if (byIsin?.id) return String(byIsin.id);
   }
-  return {
-    ticker: toDeterministicSymbol(name),
-    unresolved: true,
-  };
-}
 
-async function ensureAsset(ticker: string, name: string, currency: string | null) {
-  const { data: existing, error: existingError } = await supabase
+  const { data: bySymbol, error: bySymbolError } = await supabase
     .from("assets")
     .select("id")
-    .eq("symbol", ticker)
+    .eq("symbol", identifier)
     .limit(1)
     .maybeSingle();
-  if (existingError) throw existingError;
-  if (existing?.id) return String(existing.id);
+  if (bySymbolError) throw bySymbolError;
+  if (bySymbol?.id) return String(bySymbol.id);
 
   const { data: inserted, error: insertError } = await supabase
     .from("assets")
     .insert({
-      symbol: ticker,
-      name: name || ticker,
-      currency: currency || "SEK",
+      symbol: identifier,
+      isin: isin || null,
+      name: name || identifier,
     })
     .select("id")
     .single();
@@ -278,32 +266,45 @@ export async function importHoldingsFromXlsx(
   fileData: ArrayBuffer
 ): Promise<ImportExecutionSummary> {
   const workbook = XLSX.read(fileData, { type: "array" });
-  const sheet = workbook.Sheets["Holdings"];
-  if (!sheet) return { inserted: 0, skipped: 0, unresolved: [] };
-
-  const rows = XLSX.utils.sheet_to_json<Array<unknown>>(sheet, { header: 1, raw: false });
-  const dataRows = rows.slice(2);
-  const unresolved = new Set<string>();
+  const sheet = workbook.Sheets["Holdings"] ?? workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) return { inserted: 0, skipped: 0, fallback: 0 };
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: false });
   let skipped = 0;
   let inserted = 0;
+  let fallback = 0;
 
-  for (const row of dataRows) {
+  const isCashName = (value: string) => {
+    const v = value.toLowerCase();
+    return v.includes("cash") || v.includes("likvid") || v.includes("konto");
+  };
+
+  const read = (row: Record<string, unknown>, aliases: string[]) => {
+    for (const [key, value] of Object.entries(row)) {
+      const normalized = key.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (aliases.some((alias) => normalized.includes(alias))) {
+        return normalizeForImport(value);
+      }
+    }
+    return "";
+  };
+
+  for (const row of rows) {
     try {
-      const isin = normalizeForImport(row[8]).toUpperCase() || null;
-      const currency = normalizeForImport(row[10]).toUpperCase() || null;
-      const name = normalizeForImport(row[11]);
-      const quantity = parseNumber(normalizeForImport(row[12]));
-      const price = parseNumber(normalizeForImport(row[13]));
+      const isin = read(row, ["isin"]).toUpperCase() || null;
+      const name = read(row, ["name", "namn", "instrument", "asset"]);
+      const quantity = parseNumber(read(row, ["holding", "quantity", "antal", "shares"]));
+      const price = parseNumber(read(row, ["price", "kurs", "avgcost", "averagecost"]));
+      const currency = read(row, ["currency", "valuta"]).toUpperCase() || null;
 
-      if (!name || quantity === null || quantity === 0) {
+      if ((!isin && !name) || !quantity || isCashName(name)) {
         skipped += 1;
         continue;
       }
 
-      const resolved = await resolveTickerFromIsin(isin, name);
-      if (resolved.unresolved) unresolved.add(isin || name);
+      const identifier = buildAssetIdentifier(isin, name);
+      if (!isin) fallback += 1;
 
-      const assetId = await ensureAsset(resolved.ticker, name, currency);
+      const assetId = await ensureAsset(isin, name, identifier);
 
       const { error } = await supabase
         .from("holdings")
@@ -325,11 +326,11 @@ export async function importHoldingsFromXlsx(
     }
   }
 
-  const result = { inserted, skipped, unresolved: Array.from(unresolved) };
+  const result = { inserted, skipped, fallback };
   console.log("Import summary:", {
     inserted,
     skipped,
-    unresolvedCount: result.unresolved.length,
+    fallback,
   });
   return result;
 }
@@ -350,5 +351,5 @@ export async function runImportPipeline(
     return importHoldingsFromXlsx(portfolioId, fileData as ArrayBuffer);
   }
 
-  return { inserted: 0, skipped: 0, unresolved: [] };
+  return { inserted: 0, skipped: 0, fallback: 0 };
 }
