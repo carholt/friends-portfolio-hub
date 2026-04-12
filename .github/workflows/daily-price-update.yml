@@ -13,11 +13,12 @@ jobs:
         env:
           SUPABASE_FUNCTION_URL: ${{ secrets.SUPABASE_FUNCTION_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${SUPABASE_FUNCTION_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
-            echo "Missing required secrets: SUPABASE_FUNCTION_URL and/or SUPABASE_SERVICE_ROLE_KEY"
+          if [ -z "${SUPABASE_FUNCTION_URL:-}" ]; then
+            echo "Missing required secret: SUPABASE_FUNCTION_URL"
             exit 1
           fi
 
@@ -41,6 +42,23 @@ jobs:
           esac
           echo "Calling ${endpoint}"
 
+          auth_headers=()
+          auth_mode="none"
+          if [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            auth_headers=(
+              --header "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+              --header "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
+            )
+            auth_mode="service_role"
+          elif [ -n "${SUPABASE_ANON_KEY:-}" ]; then
+            auth_headers=(
+              --header "Authorization: Bearer ${SUPABASE_ANON_KEY}"
+              --header "apikey: ${SUPABASE_ANON_KEY}"
+            )
+            auth_mode="anon"
+          fi
+          echo "Auth mode: ${auth_mode}"
+
           max_attempts=3
           attempt=1
           http_code=000
@@ -52,8 +70,7 @@ jobs:
             set +e
             curl_output=$(curl --silent --show-error \
               --request POST "${endpoint}" \
-              --header "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-              --header "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+              "${auth_headers[@]}" \
               --header "Content-Type: application/json" \
               --data '{}' \
               --connect-timeout 10 \
