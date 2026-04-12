@@ -1,113 +1,199 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Upload, X } from "lucide-react";
+import { Upload } from "lucide-react";
 import { toast } from "sonner";
-import { groupNordeaHoldingsByAccount, parseCSV, parseExcelImport, parseJSONImport, validateImportRows, type NordeaAccountGroup } from "@/lib/portfolio-utils";
-import { applyTickerResolutionsToRows } from "@/lib/ticker-resolution";
+import { parseCSV, parseExcelImport } from "@/lib/portfolio-utils";
 import { logAuditAction } from "@/lib/audit";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { parseDelimitedFile } from "@/lib/import-engine";
-import { detectHoldingsImportIssue } from "@/lib/import-guards";
 
-type ImportFormat = "csv" | "json" | "xlsx";
-type ImportMode = "replace" | "merge";
-type Visibility = "private" | "authenticated" | "group" | "public";
+type ImportStep = 1 | 2 | 3 | 4;
+type ImportStatus = "resolved" | "fallback" | "missing" | "skipped";
 
-interface PortfolioChoice { id: string; name: string; base_currency: string; }
-interface AccountSelection {
-  target: string;
-  portfolioName: string;
-  baseCurrency: string;
-  visibility: Visibility;
+interface ImportSummary {
+  inserted: number;
+  updated: number;
+  skipped: number;
+  errors: number;
 }
 
-interface ImportSummary { inserted: number; updated: number; skipped: number; errors: number; }
+interface PreviewRow {
+  date: string;
+  name: string;
+  isin: string;
+  type: string;
+  quantity: number | null;
+  price: number | null;
+  amount: number | null;
+  currency: string;
+  status: ImportStatus;
+  statusLabel: string;
+  importRow: any | null;
+}
 
-interface Props { open: boolean; onOpenChange: (v: boolean) => void; portfolioId: string; onImported: () => void; }
+interface Props {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  portfolioId: string;
+  onImported: () => void;
+}
+
+const toKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const parseNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const normalized = text.replace(/\s/g, "").replace(/\.(?=.*[,])/g, "").replace(/,/g, ".");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+};
 
 const normalizeImportSymbol = (value: string) => {
   const sanitized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   return sanitized || "UNKNOWN";
 };
 
+function pickField(row: Record<string, unknown>, aliases: string[]): string {
+  const entries = Object.entries(row);
+  const byKey = new Map(entries.map(([key, value]) => [toKey(key), value]));
+  for (const alias of aliases) {
+    const value = byKey.get(toKey(alias));
+    if (value !== undefined && String(value ?? "").trim() !== "") return String(value).trim();
+  }
+  return "";
+}
+
+function buildPreviewRows(rawRows: Array<Record<string, unknown>>, mappings: Map<string, string>): PreviewRow[] {
+  return rawRows.map((row) => {
+    const date = pickField(row, ["date", "datum", "tradedate", "avslutsdatum"]);
+    const name = pickField(row, ["name", "namn", "instrument", "symbol", "ticker", "kortnamn"]);
+    const isin = pickField(row, ["isin"]).toUpperCase();
+    const type = pickField(row, ["type", "transaktionstyp", "trade_type"]);
+    const currency = (pickField(row, ["currency", "valuta", "cost_currency", "base currency"]) || "USD").toUpperCase();
+    const quantity = parseNumber(pickField(row, ["quantity", "antal", "holdings", "shares", "antal/nominellt"]));
+    const price = parseNumber(pickField(row, ["price", "kurs", "avg_cost", "average purchase price", "genomsnitt"]));
+    const amount = parseNumber(pickField(row, ["amount", "belopp", "total"]));
+
+    const broken = !date && quantity == null && amount == null;
+    if (broken) {
+      return {
+        date,
+        name,
+        isin,
+        type,
+        quantity,
+        price,
+        amount,
+        currency,
+        status: "skipped",
+        statusLabel: "⚠ Missing data",
+        importRow: null,
+      };
+    }
+
+    const mappedTicker = isin ? mappings.get(isin) : null;
+    const symbol = mappedTicker || normalizeImportSymbol(name || isin);
+    const normalizedRow = {
+      symbol,
+      name: name || symbol,
+      quantity: quantity ?? 0,
+      avg_cost: price ?? 0,
+      cost_currency: currency || "USD",
+      asset_type: "stock",
+      metadata_json: isin ? { isin } : undefined,
+    };
+    if (!mappedTicker && (!name || !currency || price == null)) {
+      return {
+        date,
+        name,
+        isin,
+        type,
+        quantity,
+        price,
+        amount,
+        currency,
+        status: "missing",
+        statusLabel: "⚠ Missing data",
+        importRow: normalizedRow,
+      };
+    }
+
+    if (mappedTicker) {
+      return {
+        date,
+        name,
+        isin,
+        type,
+        quantity,
+        price,
+        amount,
+        currency,
+        status: "resolved",
+        statusLabel: "✔ Resolved",
+        importRow: normalizedRow,
+      };
+    }
+
+    return {
+      date,
+      name,
+      isin,
+      type,
+      quantity,
+      price,
+      amount,
+      currency,
+      status: "fallback",
+      statusLabel: "⚠ Fallback",
+      importRow: normalizedRow,
+    };
+  });
+}
+
 export default function ImportDialog({ open, onOpenChange, portfolioId, onImported }: Props) {
-  const [step, setStep] = useState(1);
-  const [format, setFormat] = useState<ImportFormat>("csv");
-  const [mode, setMode] = useState<ImportMode>("replace");
-  const [rows, setRows] = useState<any[]>([]);
-  const [detectedNordea, setDetectedNordea] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [existingPortfolios, setExistingPortfolios] = useState<PortfolioChoice[]>([]);
-  const [nordeaAccounts, setNordeaAccounts] = useState<NordeaAccountGroup[]>([]);
-  const [accountSelections, setAccountSelections] = useState<Record<string, AccountSelection>>({});
-  const [tickerResolutions, setTickerResolutions] = useState<Record<string, string>>({});
-  const [importWarning, setImportWarning] = useState<string | null>(null);
-  const [lastImportSummary, setLastImportSummary] = useState<ImportSummary | null>(null);
-  const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
+  const [step, setStep] = useState<ImportStep>(1);
+  const [file, setFile] = useState<File | null>(null);
+  const [parsing, setParsing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [previewRows, setPreviewRows] = useState<PreviewRow[]>([]);
+  const [resultSummary, setResultSummary] = useState<{ imported: number; skipped: number; fallback: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const totalSteps = detectedNordea ? 5 : 4;
-  const validRows = useMemo(() => rows.filter((r) => r.valid), [rows]);
-  const resolverItems = useMemo(() => {
-    if (!detectedNordea) return [] as Array<{ isin: string; name: string }>;
-    const byIsin = new Map<string, { isin: string; name: string }>();
-    validRows.forEach((row) => {
-      const isin = String(row?.metadata_json?.isin ?? row.symbol ?? "").trim().toUpperCase();
-      if (!isin || byIsin.has(isin)) return;
-      byIsin.set(isin, { isin, name: String(row.name || "").trim() || isin });
-    });
-    return [...byIsin.values()];
-  }, [detectedNordea, validRows]);
+  const importableRows = useMemo(
+    () => previewRows.map((row) => row.importRow).filter((row): row is any => Boolean(row)),
+    [previewRows],
+  );
 
-  const mappedNordeaCount = useMemo(() => resolverItems.filter((item) => Boolean(tickerResolutions[item.isin])).length, [resolverItems, tickerResolutions]);
-  const unresolvedNordea = useMemo(() => resolverItems.filter((item) => !tickerResolutions[item.isin]).map((item) => item.isin), [resolverItems, tickerResolutions]);
-
-  useEffect(() => {
-    if (!detectedNordea || resolverItems.length === 0) return;
-    let active = true;
-
-    const runLocalResolution = async () => {
-      const isins = resolverItems.map((item) => item.isin);
-      const { data: mappings } = await supabase
-        .from("instrument_mappings")
-        .select("isin,ticker")
-        .in("isin", isins);
-
-      if (!active) return;
-
-      const mappingByIsin = new Map<string, string>();
-      (mappings || []).forEach((row: any) => {
-        const isin = String(row?.isin || "").trim().toUpperCase();
-        const ticker = String(row?.ticker || "").trim().toUpperCase();
-        if (isin && ticker) mappingByIsin.set(isin, ticker);
-      });
-
-      const next: Record<string, string> = {};
-      resolverItems.forEach((item) => {
-        next[item.isin] = mappingByIsin.get(item.isin) || normalizeImportSymbol(item.name) || item.name;
-      });
-      setTickerResolutions(next);
+  const previewSummary = useMemo(() => {
+    const skippedRows = previewRows.filter((row) => row.status === "skipped").length;
+    const fallbackRows = previewRows.filter((row) => row.status === "fallback").length;
+    const validRows = previewRows.filter((row) => row.status !== "skipped").length;
+    return {
+      totalRows: previewRows.length,
+      validRows,
+      fallbackRows,
+      skippedRows,
     };
+  }, [previewRows]);
 
-    void runLocalResolution();
-    return () => {
-      active = false;
-    };
-  }, [detectedNordea, resolverItems]);
+  const resetImport = () => {
+    setStep(1);
+    setFile(null);
+    setParsing(false);
+    setImporting(false);
+    setPreviewRows([]);
+    setResultSummary(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
-  const defaultImportSummary: ImportSummary = { inserted: 0, updated: 0, skipped: 0, errors: 0 };
-
-  const runSnapshotImport = async (targetPortfolioId: string, importRows: any[], importMode: ImportMode): Promise<ImportSummary> => {
+  const runSnapshotImport = async (rowsToImport: any[]): Promise<ImportSummary> => {
     const { data, error } = await supabase.rpc("import_holdings_snapshot", {
-      _portfolio_id: targetPortfolioId,
-      _mode: importMode,
-      _rows_json: importRows as any,
+      _portfolio_id: portfolioId,
+      _mode: "replace",
+      _rows_json: rowsToImport as any,
     });
 
     if (error) throw error;
@@ -121,243 +207,194 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
     };
   };
 
-  const resetImport = () => {
-    setStep(1);
-    setRows([]);
-    setDetectedNordea(false);
-    setNordeaAccounts([]);
-    setAccountSelections({});
-    setTickerResolutions({});
-    setImportWarning(null);
-    setDetectedColumns([]);
-    setLastImportSummary(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const parseFile = async (payload: string | ArrayBuffer, fileFormat: ImportFormat) => {
-    if (fileFormat === "xlsx") {
-      const spreadsheet = parseExcelImport(payload as ArrayBuffer);
-      const validated = validateImportRows(spreadsheet.holdings);
-      setDetectedNordea(spreadsheet.detectedNordea);
-      setRows(validated);
-
-      if (spreadsheet.detectedNordea) {
-        const groups = spreadsheet.nordeaAccounts ?? groupNordeaHoldingsByAccount(spreadsheet.holdings);
-        setNordeaAccounts(groups);
-
-        const { data: userPortfolios } = await supabase
-          .from("portfolios")
-          .select("id,name,base_currency")
-          .order("created_at", { ascending: false });
-
-        setExistingPortfolios(userPortfolios || []);
-        const defaults: Record<string, AccountSelection> = {};
-        groups.forEach((group) => {
-          defaults[group.accountKey] = {
-            target: "new",
-            portfolioName: `Nordea - ${group.accountName}`,
-            baseCurrency: group.baseCurrency || spreadsheet.baseCurrency || "SEK",
-            visibility: "private",
-          };
-        });
-        setAccountSelections(defaults);
-      }
-
-      setStep(3);
-      return;
-    }
-
-    const parsed = fileFormat === "json" ? parseJSONImport(payload as string).holdings : parseCSV(payload as string);
-    if (fileFormat === "csv") {
-      const analysis = parseDelimitedFile(payload as string);
-      setDetectedColumns(analysis.headers);
-      const issue = detectHoldingsImportIssue(payload as string);
-      if (issue) {
-        setImportWarning(issue);
-        if (issue.includes("transaction export")) return;
-      } else {
-        setImportWarning(null);
-      }
-    }
-    setDetectedNordea(false);
-    setNordeaAccounts([]);
-    setAccountSelections({});
-    setRows(validateImportRows(parsed));
-    setStep(3);
-  };
-
-  const onUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        await parseFile(ev.target?.result as string | ArrayBuffer, format);
-      } catch {
-        toast.error("Could not parse file.");
-      }
-    };
-    if (format === "xlsx") {
-      reader.readAsArrayBuffer(file);
-      return;
-    }
-    reader.readAsText(file);
-  };
-
-  const runImport = async () => {
-    setBusy(true);
+  const parseUploadedFile = async (uploadedFile: File) => {
+    setFile(uploadedFile);
+    setParsing(true);
+    setPreviewRows([]);
+    setResultSummary(null);
 
     try {
-      if (!detectedNordea) {
-        const summary = await runSnapshotImport(portfolioId, validRows, mode);
-        setLastImportSummary(summary);
-        await logAuditAction("import", "portfolio", portfolioId, {
-          mode,
-          valid_rows: validRows.length,
-          total_rows: rows.length,
-          ...summary,
-        });
-        onOpenChange(false);
-        onImported();
-        toast.success(`Import complete: ${summary.inserted} inserted, ${summary.updated} updated, ${summary.skipped} skipped, ${summary.errors} errors.`);
-        return;
+      const extension = uploadedFile.name.toLowerCase().split(".").pop();
+      let rawRows: Array<Record<string, unknown>> = [];
+
+      if (extension === "xlsx") {
+        const buffer = await uploadedFile.arrayBuffer();
+        rawRows = parseExcelImport(buffer).holdings as Array<Record<string, unknown>>;
+      } else {
+        const text = await uploadedFile.text();
+        rawRows = parseCSV(text) as Array<Record<string, unknown>>;
       }
 
-      const importRows = applyTickerResolutionsToRows(validRows, tickerResolutions);
+      const isins = Array.from(
+        new Set(
+          rawRows
+            .map((row) => pickField(row, ["isin"]).toUpperCase())
+            .filter(Boolean),
+        ),
+      );
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) {
-        toast.error("Could not identify user for Nordea import.");
-        return;
+      let mappings = new Map<string, string>();
+      if (isins.length > 0) {
+        const { data } = await supabase
+          .from("instrument_mappings")
+          .select("isin,ticker")
+          .in("isin", isins);
+
+        mappings = new Map(
+          (data || [])
+            .map((row: any) => [String(row?.isin || "").toUpperCase(), String(row?.ticker || "").toUpperCase()])
+            .filter(([isin, ticker]) => Boolean(isin && ticker)),
+        );
       }
 
-      let totalSummary: ImportSummary = { ...defaultImportSummary };
-      for (const group of nordeaAccounts) {
-        const selection = accountSelections[group.accountKey];
-        if (!selection) continue;
+      const nextPreview = buildPreviewRows(rawRows, mappings);
+      setPreviewRows(nextPreview);
+      setStep(2);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not parse file.";
+      toast.error(message);
+    } finally {
+      setParsing(false);
+    }
+  };
 
-        let targetPortfolioId = selection.target;
-        if (selection.target === "new") {
-          const { data: created, error } = await supabase.from("portfolios").insert({
-            owner_user_id: userData.user.id,
-            name: selection.portfolioName.trim(),
-            base_currency: selection.baseCurrency,
-            visibility: selection.visibility,
-            broker: "nordea",
-          }).select("id").single();
+  const runImportPipeline = async () => {
+    setImporting(true);
 
-          if (error || !created?.id) {
-            const technicalDetail = error?.message || "Portfolio insert returned no id.";
-            await logAuditAction("import_portfolio_create_failed", "portfolio", undefined, {
-              broker: "nordea",
-              account_key: group.accountKey,
-              account_name: group.accountName,
-              selection,
-              visibility: selection.visibility,
-              base_currency: selection.baseCurrency,
-              import_mode: mode,
-              technical_detail: technicalDetail,
-            });
-            toast.error(`Could not create portfolio for ${group.accountName}.`);
-            return;
-          }
+    try {
+      const summary = await runSnapshotImport(importableRows);
+      const inserted = summary.inserted + summary.updated;
+      const skipped = previewSummary.skippedRows + summary.skipped + summary.errors;
+      const fallback = previewSummary.fallbackRows;
 
-          targetPortfolioId = created.id;
-        }
+      console.log({ inserted, skipped, fallback });
 
-        const accountRows = importRows.filter((row) => row.account_key === group.accountKey);
-        const summary = await runSnapshotImport(targetPortfolioId, accountRows, mode);
-        totalSummary = {
-          inserted: totalSummary.inserted + summary.inserted,
-          updated: totalSummary.updated + summary.updated,
-          skipped: totalSummary.skipped + summary.skipped,
-          errors: totalSummary.errors + summary.errors,
-        };
-        await logAuditAction("import", "portfolio", targetPortfolioId, {
-          mode,
-          broker: "nordea",
-          account_key: group.accountKey,
-          valid_rows: accountRows.length,
-          total_rows: rows.length,
-          unresolved_count: unresolvedNordea.length,
-          unresolved: unresolvedNordea,
-          ...summary,
-        });
-      }
+      await logAuditAction("import", "portfolio", portfolioId, {
+        flow: "upload_preview_import_result",
+        total_rows: previewSummary.totalRows,
+        importable_rows: importableRows.length,
+        fallback_rows: fallback,
+        skipped_rows: skipped,
+        ...summary,
+      });
 
-      setLastImportSummary(totalSummary);
-      onOpenChange(false);
+      setResultSummary({ imported: inserted, skipped, fallback });
+      setStep(4);
       onImported();
-      const unresolvedText = unresolvedNordea.length ? ` · ${unresolvedNordea.length} unresolved (auto-handled)` : "";
-      toast.success(`Nordea import complete: ${totalSummary.inserted} inserted, ${totalSummary.updated} updated, ${totalSummary.skipped} skipped, ${totalSummary.errors} errors${unresolvedText}.`);
+      toast.success("Import completed.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Import failed.";
       toast.error(message);
     } finally {
-      setBusy(false);
+      setImporting(false);
     }
   };
 
+  const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    if (!selected) return;
+    void parseUploadedFile(selected);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetImport(); }}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Import holdings (Step {step}/{totalSteps})</DialogTitle></DialogHeader>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        onOpenChange(value);
+        if (!value) resetImport();
+      }}
+    >
+      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Import holdings (Step {step}/4)</DialogTitle>
+        </DialogHeader>
 
-        {step === 1 && <div className="space-y-3"><p className="text-sm">Import mode: <span className="font-medium">Import holdings</span></p><p className="text-xs text-muted-foreground">Transaction files are not supported in this dialog. Use "Import transactions".</p><p className="text-sm">Choose file format.</p><Select value={format} onValueChange={(v) => setFormat(v as ImportFormat)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="csv">CSV (symbol,quantity required)</SelectItem><SelectItem value="json">JSON</SelectItem><SelectItem value="xlsx">Excel (.xlsx)</SelectItem></SelectContent></Select><div className="flex gap-2"><Button onClick={() => setStep(2)}>Continue</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
-        {step === 2 && <div className="space-y-3"><p className="text-sm">Upload your {format.toUpperCase()} file.</p><div className="border-dashed border rounded p-10 text-center cursor-pointer" onClick={() => fileInputRef.current?.click()}><Upload className="mx-auto mb-2" />Click to upload</div><input ref={fileInputRef} type="file" accept={format === "csv" ? ".csv" : format === "json" ? ".json" : ".xlsx"} className="hidden" onChange={onUpload} />{importWarning && <p className="text-sm text-destructive">{importWarning}</p>}{detectedColumns.length > 0 && <p className="text-xs text-muted-foreground">Detected columns: {detectedColumns.join(", ")}</p>}<div className="flex gap-2"><Button variant="outline" onClick={() => setStep(1)}>Back</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
-
-        {step === 3 && <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <p className="text-sm">Preview and validation ({validRows.length}/{rows.length} valid)</p>
-              {detectedNordea && <Badge variant="secondary">Nordea format detected</Badge>}
-              {detectedNordea && (
-                <Badge variant={unresolvedNordea.length ? "secondary" : "outline"}>
-                  ISIN mappings: {mappedNordeaCount}/{resolverItems.length} mapped
-                </Badge>
-              )}
+        {step === 1 && (
+          <div className="space-y-4">
+            <div
+              className="border-2 border-dashed rounded-lg p-10 text-center cursor-pointer hover:bg-muted/50 transition"
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                const dropped = event.dataTransfer.files?.[0];
+                if (!dropped) return;
+                void parseUploadedFile(dropped);
+              }}
+            >
+              <Upload className="mx-auto mb-2" />
+              <p className="font-medium">Upload CSV or XLSX</p>
+              <p className="text-xs text-muted-foreground">Drag and drop your file here, or click to browse.</p>
             </div>
-            <Select value={mode} onValueChange={(v) => setMode(v as ImportMode)}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">Replace (default)</SelectItem><SelectItem value="merge">Merge</SelectItem></SelectContent></Select>
+            <input ref={fileInputRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={onFileChange} />
+            {file && <p className="text-sm text-muted-foreground">File: {file.name}</p>}
+            {parsing && <p className="text-sm">Parsing file...</p>}
           </div>
-          <p className="text-xs text-muted-foreground">
-            {detectedNordea
-              ? "Ticker resolution uses local instrument mappings, then deterministic name fallback."
-              : "Current mapping: symbol→symbol, quantity→quantity, avg cost→avg_cost"}
-          </p><Table><TableHeader><TableRow><TableHead>Symbol</TableHead><TableHead>Qty</TableHead><TableHead>Avg cost</TableHead><TableHead>Row status</TableHead><TableHead /></TableRow></TableHeader><TableBody>{rows.map((r, i) => <TableRow key={i}><TableCell>{r.symbol}</TableCell><TableCell>{r.quantity}</TableCell><TableCell>{r.avg_cost}</TableCell><TableCell>{r.valid ? <Badge>Valid</Badge> : <Badge variant="destructive">{r.errors[0]}</Badge>}</TableCell><TableCell>{!r.valid && <Button variant="ghost" size="sm" onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>}</TableCell></TableRow>)}</TableBody></Table>
-          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button onClick={() => setStep(detectedNordea ? 4 : 4)} disabled={validRows.length === 0}>Continue</Button></div>
-        </div>}
+        )}
 
-        {detectedNordea && step === 4 && <div className="space-y-4">
-          <p className="text-sm font-medium">Select destination portfolio(s)</p>
-          {nordeaAccounts.map((account) => {
-            const selection = accountSelections[account.accountKey];
-            return (
-              <div key={account.accountKey} className="border rounded p-3 space-y-2">
-                <div className="text-sm font-medium">{account.accountName} ({account.accountKey})</div>
-                <div className="text-xs text-muted-foreground">{account.holdingsCount} holdings · {account.marketValueBase == null ? "Market value n/a" : `${account.marketValueBase.toFixed(2)} ${account.baseCurrency}`}</div>
-                <Select value={selection?.target || "new"} onValueChange={(v) => setAccountSelections((prev) => ({ ...prev, [account.accountKey]: { ...prev[account.accountKey], target: v } }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="new">Create new portfolio</SelectItem>
-                    {existingPortfolios.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+        {step === 2 && (
+          <div className="space-y-4">
+            <div className="text-sm text-muted-foreground">File: {file?.name}</div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">Total rows: {previewSummary.totalRows}</Badge>
+              <Badge variant="outline">Valid rows: {previewSummary.validRows}</Badge>
+              <Badge variant="outline">Fallback rows: {previewSummary.fallbackRows}</Badge>
+              <Badge variant="outline">Skipped rows: {previewSummary.skippedRows}</Badge>
+            </div>
 
-                {selection?.target === "new" && <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                  <div className="space-y-1"><Label>Portfolio name</Label><Input value={selection.portfolioName} onChange={(e) => setAccountSelections((prev) => ({ ...prev, [account.accountKey]: { ...prev[account.accountKey], portfolioName: e.target.value } }))} /></div>
-                  <div className="space-y-1"><Label>Base currency</Label><Input value={selection.baseCurrency} onChange={(e) => setAccountSelections((prev) => ({ ...prev, [account.accountKey]: { ...prev[account.accountKey], baseCurrency: e.target.value.toUpperCase() } }))} /></div>
-                  <div className="space-y-1"><Label>Visibility</Label><Select value={selection.visibility} onValueChange={(v) => setAccountSelections((prev) => ({ ...prev, [account.accountKey]: { ...prev[account.accountKey], visibility: v as Visibility } }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="private">Private</SelectItem><SelectItem value="authenticated">Logged-in</SelectItem><SelectItem value="group">Group</SelectItem><SelectItem value="public">Public</SelectItem></SelectContent></Select></div>
-                </div>}
-              </div>
-            );
-          })}
-          <div className="rounded border p-3 text-xs text-muted-foreground">
-            Unresolved ISINs are auto-handled with deterministic fallback symbols. Unresolved now: {unresolvedNordea.length}.
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>ISIN</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Quantity</TableHead>
+                  <TableHead>Price</TableHead>
+                  <TableHead>Currency</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {previewRows.slice(0, 20).map((row, index) => (
+                  <TableRow key={`${row.isin}-${index}`}>
+                    <TableCell>{row.date || "-"}</TableCell>
+                    <TableCell>{row.name || "-"}</TableCell>
+                    <TableCell>{row.isin || "-"}</TableCell>
+                    <TableCell>{row.type || "-"}</TableCell>
+                    <TableCell>{row.quantity ?? "-"}</TableCell>
+                    <TableCell>{row.price ?? "-"}</TableCell>
+                    <TableCell>{row.currency || "-"}</TableCell>
+                    <TableCell>{row.statusLabel}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={resetImport}>Upload another file</Button>
+              <Button onClick={() => setStep(3)}>Continue</Button>
+            </div>
           </div>
-          <div className="flex gap-2"><Button variant="outline" onClick={() => setStep(3)}>Back</Button><Button onClick={() => setStep(5)}>Continue</Button></div>
-        </div>}
+        )}
 
-        {((!detectedNordea && step === 4) || (detectedNordea && step === 5)) && <div className="space-y-3"><p className="text-sm">You are about to {mode} holdings{detectedNordea ? " into selected portfolios" : " for this portfolio"}.</p>{detectedNordea && <p className="text-xs text-muted-foreground">Unresolved (informational): {unresolvedNordea.length}</p>}{lastImportSummary && <p className="text-xs text-muted-foreground">Last import summary: {lastImportSummary.inserted} inserted · {lastImportSummary.updated} updated · {lastImportSummary.skipped} skipped · {lastImportSummary.errors} errors</p>}<div className="flex gap-2"><Button onClick={runImport} disabled={busy}>{busy ? "Importing..." : "Run import"}</Button><Button variant="outline" onClick={resetImport}>Reset import</Button></div></div>}
+        {step === 3 && (
+          <div className="space-y-4">
+            <p className="text-sm">Ready to import {importableRows.length} rows.</p>
+            <Button onClick={runImportPipeline} disabled={importing}>
+              {importing ? "Importing..." : `Import ${importableRows.length} rows`}
+            </Button>
+          </div>
+        )}
+
+        {step === 4 && resultSummary && (
+          <div className="space-y-4">
+            <p>✔ Imported: {resultSummary.imported} rows</p>
+            <p>⚠ Skipped: {resultSummary.skipped} rows</p>
+            <p>⚠ Fallback used: {resultSummary.fallback} rows</p>
+            <Button onClick={() => onOpenChange(false)}>Done</Button>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
