@@ -173,7 +173,8 @@ Workflow: `.github/workflows/daily-price-update.yml`
 Required GitHub repository secrets:
 
 - `SUPABASE_FUNCTION_URL` (accepted formats: `https://<project-ref>.functions.supabase.co`, `https://<project-ref>.supabase.co/functions/v1`, or full function URL)
-- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY` (recommended)
+- `SUPABASE_ANON_KEY` (optional fallback when no service role key is configured)
 
 ## 8) Copy/paste deployment checklist
 
@@ -201,7 +202,7 @@ Manual dashboard steps remaining:
 
 - Cloudflare Pages: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in Settings → Variables and Secrets.
 - Supabase Auth: set Site URL + Redirect URLs for Cloudflare production/preview and localhost.
-- GitHub repo secrets: set `SUPABASE_FUNCTION_URL` and `SUPABASE_SERVICE_ROLE_KEY` for scheduled workflow.
+- GitHub repo secrets: set `SUPABASE_FUNCTION_URL` and preferably `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_ANON_KEY` fallback) for scheduled workflow.
 
 ## 9) Portfolio Tracker 2026 notes & pitfalls
 
