@@ -242,7 +242,7 @@ export function buildPreviewRows(
 
     const errors: string[] = [];
 
-    if (!isin && !name) {
+    if (!isin && !name && !symbolFromFile) {
       errors.push("Missing ISIN and name");
     }
 
