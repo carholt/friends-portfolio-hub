@@ -8,6 +8,7 @@ import { Upload } from "lucide-react";
 import { toast } from "sonner";
 import { parseCSV, parseExcelImport } from "@/lib/portfolio-utils";
 import { logAuditAction } from "@/lib/audit";
+import { buildAssetIdentifier } from "@/lib/asset-identifier";
 
 type ImportStep = 1 | 2 | 3 | 4;
 type ImportStatus = "resolved" | "fallback" | "missing" | "skipped";
@@ -51,11 +52,6 @@ const parseNumber = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-const normalizeImportSymbol = (value: string) => {
-  const sanitized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  return sanitized || "UNKNOWN";
-};
-
 function pickField(row: Record<string, unknown>, aliases: string[]): string {
   const entries = Object.entries(row);
   const byKey = new Map(entries.map(([key, value]) => [toKey(key), value]));
@@ -66,7 +62,7 @@ function pickField(row: Record<string, unknown>, aliases: string[]): string {
   return "";
 }
 
-function buildPreviewRows(rawRows: Array<Record<string, unknown>>, mappings: Map<string, string>): PreviewRow[] {
+function buildPreviewRows(rawRows: Array<Record<string, unknown>>): PreviewRow[] {
   return rawRows.map((row) => {
     const date = pickField(row, ["date", "datum", "tradedate", "avslutsdatum"]);
     const name = pickField(row, ["name", "namn", "instrument", "symbol", "ticker", "kortnamn"]);
@@ -94,18 +90,17 @@ function buildPreviewRows(rawRows: Array<Record<string, unknown>>, mappings: Map
       };
     }
 
-    const mappedTicker = isin ? mappings.get(isin) : null;
-    const symbol = mappedTicker || normalizeImportSymbol(name || isin);
+    const symbol = buildAssetIdentifier(isin || null, name || null);
     const normalizedRow = {
       symbol,
+      isin: isin || null,
       name: name || symbol,
       quantity: quantity ?? 0,
       avg_cost: price ?? 0,
       cost_currency: currency || "USD",
       asset_type: "stock",
-      metadata_json: isin ? { isin } : undefined,
     };
-    if (!mappedTicker && (!name || !currency || price == null)) {
+    if (!isin && !name) {
       return {
         date,
         name,
@@ -121,7 +116,7 @@ function buildPreviewRows(rawRows: Array<Record<string, unknown>>, mappings: Map
       };
     }
 
-    if (mappedTicker) {
+    if (isin) {
       return {
         date,
         name,
@@ -132,7 +127,23 @@ function buildPreviewRows(rawRows: Array<Record<string, unknown>>, mappings: Map
         amount,
         currency,
         status: "resolved",
-        statusLabel: "✔ Resolved",
+        statusLabel: "✔ Resolved (ISIN)",
+        importRow: normalizedRow,
+      };
+    }
+
+    if (!name || !currency || price == null) {
+      return {
+        date,
+        name,
+        isin,
+        type,
+        quantity,
+        price,
+        amount,
+        currency,
+        status: "missing",
+        statusLabel: "⚠ Missing data",
         importRow: normalizedRow,
       };
     }
@@ -147,7 +158,7 @@ function buildPreviewRows(rawRows: Array<Record<string, unknown>>, mappings: Map
       amount,
       currency,
       status: "fallback",
-      statusLabel: "⚠ Fallback",
+      statusLabel: "⚠ Fallback (NAME)",
       importRow: normalizedRow,
     };
   });
@@ -225,29 +236,7 @@ export default function ImportDialog({ open, onOpenChange, portfolioId, onImport
         rawRows = parseCSV(text) as Array<Record<string, unknown>>;
       }
 
-      const isins = Array.from(
-        new Set(
-          rawRows
-            .map((row) => pickField(row, ["isin"]).toUpperCase())
-            .filter(Boolean),
-        ),
-      );
-
-      let mappings = new Map<string, string>();
-      if (isins.length > 0) {
-        const { data } = await supabase
-          .from("instrument_mappings")
-          .select("isin,ticker")
-          .in("isin", isins);
-
-        mappings = new Map(
-          (data || [])
-            .map((row: any) => [String(row?.isin || "").toUpperCase(), String(row?.ticker || "").toUpperCase()])
-            .filter(([isin, ticker]) => Boolean(isin && ticker)),
-        );
-      }
-
-      const nextPreview = buildPreviewRows(rawRows, mappings);
+      const nextPreview = buildPreviewRows(rawRows);
       setPreviewRows(nextPreview);
       setStep(2);
     } catch (error) {

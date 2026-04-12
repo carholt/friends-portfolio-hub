@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx";
 import { detectMapping, mapExchangeToPriceSymbol, parseDelimitedFile, parseNumberByLocale, type ImportMapping } from "@/lib/import-engine";
 import { supabase } from "@/integrations/supabase/client";
+import { buildAssetIdentifier, cleanName } from "@/lib/asset-identifier";
 
 export type NormalizedTransactionType = "buy" | "sell" | "dividend" | "fee" | "fx" | "unknown";
 export type BrokerKind = "nordea" | "avanza" | "unknown";
@@ -183,9 +184,13 @@ export function buildPreviewRows(
     const tradeId =
       normalize(row[mapping.columns.trade_id || ""]) || null;
 
-    const symbol =
+    const name =
+      normalize(row[mapping.columns.name || ""]) || null;
+    const symbolFromFile =
       normalize(row[mapping.columns.symbol || ""]).toUpperCase() ||
       null;
+    const isin = normalize(row[mapping.columns.isin || ""]).toUpperCase() || null;
+    const symbol = symbolFromFile || (name ? `NAME:${cleanName(name)}` : null);
 
     const exchangeRaw =
       normalize(row[mapping.columns.exchange || ""]) || null;
@@ -202,7 +207,7 @@ export function buildPreviewRows(
         normalize(row[mapping.columns.trade_type || ""])
       ),
       symbol_raw: symbol,
-      isin: normalize(row[mapping.columns.isin || ""]).toUpperCase() || null,
+      isin,
       exchange_raw: exchangeRaw,
       exchange_code: exchangeMapping.exchange_code,
       price_symbol: exchangeMapping.price_symbol,
@@ -237,19 +242,8 @@ export function buildPreviewRows(
 
     const errors: string[] = [];
 
-    if (!mapping.columns.symbol)
-      errors.push("Could not detect ticker column");
-
-    if (
-      normalizedTx.symbol_raw &&
-      !normalizedTx.exchange_code &&
-      ["TSX", "TSXV"].some((k) =>
-        (normalizedTx.exchange_raw || "").toUpperCase().includes(k)
-      )
-    ) {
-      errors.push(
-        "Ticker present but exchange missing (required for TSXV/TSX)"
-      );
+    if (!isin && !name && !symbolFromFile) {
+      errors.push("Missing ISIN and name");
     }
 
     if (
@@ -282,7 +276,7 @@ export function buildPreviewRows(
 export interface OfflineImportSummary {
   inserted: number;
   skipped: number;
-  unresolved: string[];
+  fallback: number;
 }
 
 type ImportedTransactionType = "BUY" | "SELL" | "DIVIDEND" | "DEPOSIT" | "WITHDRAWAL";
@@ -310,29 +304,22 @@ const typeMap: Record<string, ImportedTransactionType | "TRANSFER"> = {
 
 function parseNumber(value: string | undefined): number | null {
   if (!value) return null;
-  const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
+  const normalized = value.replace(/\s/g, "").replace(/\.(?=.*[,])/g, "").replace(",", ".");
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
 const normalizeIsin = (value: unknown) => normalize(value).toUpperCase();
 
-const toDeterministicSymbol = (name: string) => {
-  const cleaned = String(name || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  if (cleaned) return cleaned;
-  const fallback = String(name || "").trim().toUpperCase();
-  return fallback || "UNKNOWN";
-};
-
 export async function importAvanzaTransactionsCsv(
   portfolioId: string,
   csvContent: string
 ): Promise<OfflineImportSummary> {
-  const unresolved = new Set<string>();
   const seen = new Set<string>();
-  const isinTickerCache = new Map<string, string | null>();
   const assetIdCache = new Map<string, string>();
   let inserted = 0;
   let skipped = 0;
+  let fallback = 0;
 
   const delimiter = csvContent.includes(";") ? ";" : ",";
   const rows = csvContent
@@ -341,7 +328,7 @@ export async function importAvanzaTransactionsCsv(
     .filter(Boolean);
 
   if (rows.length < 2) {
-    return { inserted: 0, skipped: 0, unresolved: [] };
+    return { inserted: 0, skipped: 0, fallback: 0 };
   }
 
   const headers = rows[0].split(delimiter).map((h) => h.trim());
@@ -374,7 +361,7 @@ export async function importAvanzaTransactionsCsv(
     const fxRate = parseNumber(getValue(["Valutakurs", "fx_rate"], values));
     const currency = getValue(["Valuta", "currency"], values).toUpperCase() || null;
 
-    if (!date || !type || !name || amount === null) {
+    if (!date || !type || amount === null || (!isin && !name)) {
       skipped += 1;
       continue;
     }
@@ -386,55 +373,44 @@ export async function importAvanzaTransactionsCsv(
     }
     seen.add(dedupeKey);
 
-    let ticker = "";
-    try {
-      if (isin) {
-        if (isinTickerCache.has(isin)) {
-          ticker = isinTickerCache.get(isin) || "";
-        } else {
-          const { data: mapping } = await supabase
-            .from("instrument_mappings")
-            .select("ticker")
-            .eq("isin", isin)
-            .maybeSingle();
-          ticker = normalize(mapping?.ticker).toUpperCase();
-          isinTickerCache.set(isin, ticker || null);
-        }
-      }
-      if (!ticker) {
-        ticker = toDeterministicSymbol(name);
-        unresolved.add(isin || name);
-      }
-    } catch (error) {
-      console.error("ISIN resolution error:", error);
-      ticker = toDeterministicSymbol(name);
-      unresolved.add(isin || name);
-    }
-
-    if (!ticker) {
-      skipped += 1;
-      continue;
-    }
+    const identifier = buildAssetIdentifier(isin, name);
+    if (!isin) fallback += 1;
 
     try {
-      let assetId = assetIdCache.get(ticker);
+      let assetId = assetIdCache.get(identifier);
       if (!assetId) {
-        const { data: existing } = await supabase
-          .from("assets")
-          .select("id")
-          .eq("symbol", ticker)
-          .maybeSingle();
+        const existingByIsin = isin
+          ? await supabase
+              .from("assets")
+              .select("id")
+              .eq("isin", isin)
+              .maybeSingle()
+          : { data: null as { id?: string } | null };
+
+        let existing = existingByIsin.data;
+        if (!existing) {
+          const bySymbol = await supabase
+            .from("assets")
+            .select("id")
+            .eq("symbol", identifier)
+            .maybeSingle();
+          existing = bySymbol.data;
+        }
 
         assetId = existing?.id ? String(existing.id) : "";
         if (!assetId) {
           const { data: insertedAsset } = await supabase
             .from("assets")
-            .insert({ symbol: ticker, name })
+            .insert({
+              symbol: identifier,
+              isin: isin || null,
+              name: name || identifier,
+            })
             .select("id")
             .single();
           assetId = String(insertedAsset?.id ?? "");
         }
-        if (assetId) assetIdCache.set(ticker, assetId);
+        if (assetId) assetIdCache.set(identifier, assetId);
       }
 
       if (!assetId) {
@@ -448,7 +424,7 @@ export async function importAvanzaTransactionsCsv(
           asset_id: assetId,
           broker: "avanza",
           trade_type: type,
-          symbol_raw: ticker,
+          symbol_raw: identifier,
           isin,
           traded_at: date,
           quantity: quantity ?? 0,
@@ -460,7 +436,7 @@ export async function importAvanzaTransactionsCsv(
           stable_hash: computeStableHashFromNormalizedFields({
             broker: "avanza",
             trade_type: (String(type).toLowerCase() as NormalizedTransactionType) || "unknown",
-            symbol_raw: ticker,
+            symbol_raw: identifier,
             isin,
             exchange_code: null,
             traded_at: date,
@@ -479,11 +455,11 @@ export async function importAvanzaTransactionsCsv(
     }
   }
 
-  const result = { inserted, skipped, unresolved: Array.from(unresolved) };
+  const result = { inserted, skipped, fallback };
   console.log("Import summary:", {
     inserted,
     skipped,
-    unresolvedCount: result.unresolved.length,
+    fallback,
   });
   return result;
 }
