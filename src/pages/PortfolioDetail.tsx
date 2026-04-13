@@ -59,7 +59,7 @@ export default function PortfolioDetail() {
 
       const assetIds = (holdings || []).map((h: any) => h.asset?.id).filter(Boolean);
       const { data: prices } = assetIds.length
-        ? await supabase.from("prices").select("asset_id,price").in("asset_id", assetIds).order("as_of_date", { ascending: false })
+        ? await supabase.from("asset_prices").select("asset_id,price").in("asset_id", assetIds).order("price_date", { ascending: false })
         : { data: [] as any[] };
 
       const latestPrice = new Map<string, number>();

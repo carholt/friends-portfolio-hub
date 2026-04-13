@@ -115,7 +115,7 @@ const providerSymbol = (ticker: string, exchange?: string | null) => {
 };
 
 const exchangeFromSuggestion = (item: Record<string, unknown>) => {
-  const explicit = normalizeExchange(String(item.exchange || item.exchange_code || ""));
+  const explicit = normalizeExchange(String(item.exchDisp || item.exch || item.exchange || item.exchange_code || ""));
   if (explicit) return explicit;
   const mic = normalizeExchange(String(item.mic_code || item.mic || ""));
   if (mic && micToExchange[mic]) return micToExchange[mic];
@@ -127,7 +127,7 @@ const normalizeSuggestions = (suggestions: Record<string, unknown>[], preferredE
     .slice(0, 20)
     .map((entry) => {
       const symbol = normalize(String(entry.symbol || ""));
-      const name = String(entry.instrument_name || entry.name || "");
+      const name = String(entry.shortname || entry.longname || entry.instrument_name || entry.name || "");
       const exchangeCode = exchangeFromSuggestion(entry);
       const exchangeMatchBonus = preferredExchange && exchangeCode === preferredExchange ? 20 : 0;
       return {
@@ -135,7 +135,7 @@ const normalizeSuggestions = (suggestions: Record<string, unknown>[], preferredE
         exchange_code: exchangeCode,
         name,
         score: 60 + exchangeMatchBonus,
-        source: "twelvedata",
+        source: "yahoo",
       };
     })
     .filter((entry) => entry.symbol);
@@ -182,7 +182,7 @@ const curatedMatchesByName = (name: string, preferredExchange: string | null) =>
   return scored;
 };
 
-async function suggestTicker(apiKey: string | null | undefined, isin: string, name: string, mic?: string | null) {
+async function suggestTicker(isin: string, name: string, mic?: string | null) {
   const preferredExchange = normalizeExchange(mic ? micToExchange[normalize(mic)] || mic : null);
   const cacheKey = [isin, preferredExchange || "", normalize(name)].join("|");
   const cached = suggestionCache.get(cacheKey);
@@ -369,15 +369,9 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
     return localResult;
   }
 
-  if (!apiKey) {
-    const emptyResult: SuggestResult = { suggested: "", suggestions: [] };
-    suggestionCache.set(cacheKey, emptyResult);
-    return emptyResult;
-  }
-
-  const byIsin = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(isin)}&apikey=${apiKey}`);
+  const byIsin = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(isin)}&quotesCount=20&newsCount=0`);
   const isinPayload = await byIsin.json();
-  const isinData = Array.isArray(isinPayload?.data) ? isinPayload.data : [];
+  const isinData = Array.isArray(isinPayload?.quotes) ? isinPayload.quotes : [];
   if (isinData.length > 0) {
     const normalized = normalizeSuggestions(isinData, preferredExchange);
     const first = normalized[0];
@@ -388,16 +382,16 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
         ticker: first.symbol,
         name: first.name || name || isin,
         exchange: first.exchange_code,
-        source: "twelvedata_isin",
+        source: "yahoo_isin",
       }, { onConflict: "isin" });
     }
     suggestionCache.set(cacheKey, isinResult);
     return isinResult;
   }
 
-  const byName = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(name)}&apikey=${apiKey}`);
+  const byName = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(name)}&quotesCount=20&newsCount=0`);
   const namePayload = await byName.json();
-  const nameData = Array.isArray(namePayload?.data) ? namePayload.data : [];
+  const nameData = Array.isArray(namePayload?.quotes) ? namePayload.quotes : [];
   const normalized = normalizeSuggestions(nameData, preferredExchange);
   const first = normalized[0];
   const nameResult: SuggestResult = { suggested: providerSymbol(String(first?.symbol || ""), String(first?.exchange_code || "")), suggestions: normalized.slice(0, 3) };
@@ -407,7 +401,7 @@ async function suggestTicker(apiKey: string | null | undefined, isin: string, na
       ticker: first.symbol,
       name: first.name || name || isin,
       exchange: first.exchange_code,
-      source: "twelvedata_name",
+      source: "yahoo_name",
     }, { onConflict: "isin" });
   }
   suggestionCache.set(cacheKey, nameResult);
@@ -421,8 +415,6 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const twelveKey = Deno.env.get("TWELVE_DATA_API_KEY") || "";
-
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: req.headers.get("Authorization") || "" } },
     });
@@ -436,7 +428,7 @@ Deno.serve(async (req) => {
       const name = String(payload.name || "").trim();
       const mic = String(payload.mic || "").trim();
       if (!isin) return new Response(JSON.stringify({ error: "isin required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      const result = await suggestTicker(twelveKey, isin, name || isin, mic || null);
+      const result = await suggestTicker(isin, name || isin, mic || null);
       return new Response(JSON.stringify(result), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 

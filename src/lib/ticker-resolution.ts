@@ -56,6 +56,18 @@ export function exchangeFromMic(value?: string | null): string | null {
   return MIC_TO_EXCHANGE[mic] || mic;
 }
 
+export function normalizeYahooSymbol(symbol: string, exchange?: string) {
+  if (!symbol) return symbol;
+
+  const s = symbol.toUpperCase().trim();
+  const normalizedExchange = normalizeExchangeCode(exchange);
+
+  if (normalizedExchange === "XTSX" || normalizedExchange === "XTSE") return `${s}.TO`;
+  if (normalizedExchange === "XSTO") return `${s}.ST`;
+
+  return s;
+}
+
 export function buildProviderSymbol(symbol: string, exchange?: string | null): string {
   const cleanSymbol = normalizeTicker(symbol);
   const cleanExchange = normalizeExchangeCode(exchange);

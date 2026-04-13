@@ -21,7 +21,7 @@ const normalize = (value: string | null | undefined) => (value ?? "").trim().toU
 
 function scoreCandidate(inputSymbol: string, hintCurrency: string | null, item: Record<string, unknown>) {
   const candidateSymbol = normalize(String(item.symbol || ""));
-  const exchangeCode = normalize(String(item.exchange || item.exchange_code || "")) || null;
+  const exchangeCode = normalize(String(item.exchDisp || item.exchange || "")) || null;
   const currency = normalize(String(item.currency || "")) || null;
   let score = 0;
 
@@ -36,10 +36,11 @@ function scoreCandidate(inputSymbol: string, hintCurrency: string | null, item: 
   return score;
 }
 
-async function searchSymbol(apiKey: string, symbol: string) {
-  const response = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(symbol)}&outputsize=20&apikey=${apiKey}`);
-  const payload = await response.json();
-  return Array.isArray(payload?.data) ? payload.data : [];
+async function searchSymbol(symbol: string) {
+  const response = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&quotesCount=20&newsCount=0`);
+  if (!response.ok) throw new Error(`Yahoo search HTTP ${response.status}`);
+  const payload = await response.json() as { quotes?: Record<string, unknown>[] };
+  return Array.isArray(payload?.quotes) ? payload.quotes : [];
 }
 
 Deno.serve(async (req) => {
@@ -48,14 +49,6 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const twelveKey = Deno.env.get("TWELVE_DATA_API_KEY");
-
-    if (!twelveKey) {
-      return new Response(JSON.stringify({ error: "TWELVE_DATA_API_KEY not configured" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
 
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: req.headers.get("Authorization") || "" } },
@@ -86,21 +79,21 @@ Deno.serve(async (req) => {
       });
     }
 
-    const data = await searchSymbol(twelveKey, symbol);
+    const data = await searchSymbol(symbol);
     const candidates: Candidate[] = data
       .map((item: Record<string, unknown>) => {
         const candidateSymbol = normalize(String(item.symbol || ""));
         if (!candidateSymbol) return null;
-        const exchangeCode = normalize(String(item.exchange || item.exchange_code || "")) || null;
+        const exchangeCode = normalize(String(item.exchDisp || item.exchange || "")) || null;
         const currency = normalize(String(item.currency || "")) || null;
-        const price_symbol = exchangeCode ? `${candidateSymbol}:${exchangeCode}` : candidateSymbol;
+        const price_symbol = candidateSymbol;
         return {
           price_symbol,
           exchange_code: exchangeCode,
-          name: String(item.instrument_name || item.name || candidateSymbol),
+          name: String(item.shortname || item.longname || item.name || candidateSymbol),
           currency,
           score: scoreCandidate(symbol, hintCurrency, item),
-          provider: "twelve_data",
+          provider: "yahoo",
         } as Candidate;
       })
       .filter((item): item is Candidate => !!item)
