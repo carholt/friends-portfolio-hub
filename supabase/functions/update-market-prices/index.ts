@@ -8,12 +8,10 @@ type MarketInstrument = {
   provider: string | null;
 };
 
-type PriceResponse = {
-  price?: string;
+type YahooQuote = {
+  symbol?: string;
+  regularMarketPrice?: number;
   currency?: string;
-  status?: string;
-  code?: number;
-  message?: string;
 };
 
 const corsHeaders = {
@@ -22,35 +20,29 @@ const corsHeaders = {
 };
 
 const BATCH_SIZE = 50;
-const MAX_RETRIES = 3;
-const RETRY_BASE_DELAY_MS = 500;
+const YAHOO_QUOTE_ENDPOINT = "https://query1.finance.yahoo.com/v7/finance/quote";
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+async function fetchYahooQuotes(symbols: string[]): Promise<Map<string, YahooQuote>> {
+  if (symbols.length === 0) return new Map();
 
-async function fetchPriceWithRetry(apiKey: string, priceSymbol: string): Promise<PriceResponse> {
-  let attempt = 0;
-
-  while (attempt < MAX_RETRIES) {
-    try {
-      const response = await fetch(
-        `https://api.twelvedata.com/price?symbol=${encodeURIComponent(priceSymbol)}&apikey=${apiKey}`,
-      );
-
-      if (!response.ok) {
-        throw new Error(`Provider HTTP ${response.status}`);
-      }
-
-      return await response.json() as PriceResponse;
-    } catch (error) {
-      attempt += 1;
-      if (attempt >= MAX_RETRIES) {
-        throw error;
-      }
-      await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
-    }
+  const response = await fetch(`${YAHOO_QUOTE_ENDPOINT}?symbols=${encodeURIComponent(symbols.join(","))}`);
+  if (!response.ok) {
+    throw new Error(`Yahoo HTTP ${response.status}`);
   }
 
-  throw new Error("retry loop exhausted");
+  const payload = await response.json() as {
+    quoteResponse?: {
+      result?: YahooQuote[];
+    };
+  };
+
+  const quoteMap = new Map<string, YahooQuote>();
+  for (const item of payload.quoteResponse?.result ?? []) {
+    const symbol = String(item.symbol || "").toUpperCase().trim();
+    if (symbol) quoteMap.set(symbol, item);
+  }
+
+  return quoteMap;
 }
 
 Deno.serve(async (req) => {
@@ -59,17 +51,9 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    const twelveDataApiKey = Deno.env.get("TWELVE_DATA_API_KEY");
 
     if (!supabaseUrl || !serviceRoleKey) {
       return new Response(JSON.stringify({ error: "Supabase env vars missing" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    if (!twelveDataApiKey) {
-      return new Response(JSON.stringify({ error: "TWELVE_DATA_API_KEY not configured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -107,10 +91,16 @@ Deno.serve(async (req) => {
         updated_at: string;
       }> = [];
 
-      for (const instrument of batch) {
-        try {
-          const payload = await fetchPriceWithRetry(twelveDataApiKey, instrument.price_symbol);
-          const parsedPrice = Number(payload.price);
+      const symbolMap = new Map(batch.map((instrument) => [instrument.id, instrument.price_symbol.toUpperCase().trim()]));
+      const symbols = Array.from(new Set(Array.from(symbolMap.values()).filter(Boolean)));
+
+      try {
+        const quoteBySymbol = await fetchYahooQuotes(symbols);
+
+        for (const instrument of batch) {
+          const symbol = symbolMap.get(instrument.id) || "";
+          const payload = quoteBySymbol.get(symbol);
+          const parsedPrice = Number(payload?.regularMarketPrice);
 
           if (!Number.isFinite(parsedPrice) || parsedPrice <= 0) {
             summary.skipped_invalid_price += 1;
@@ -120,14 +110,14 @@ Deno.serve(async (req) => {
           upserts.push({
             instrument_id: instrument.id,
             price: parsedPrice,
-            currency: (payload.currency ?? instrument.currency ?? "USD").toUpperCase(),
+            currency: String(payload?.currency || instrument.currency || "USD").toUpperCase(),
             price_timestamp: new Date().toISOString(),
-            source: instrument.provider ?? "twelve_data",
+            source: instrument.provider ?? "yahoo",
             updated_at: new Date().toISOString(),
           });
-        } catch {
-          summary.provider_errors += 1;
         }
+      } catch {
+        summary.provider_errors += 1;
       }
 
       if (upserts.length > 0) {

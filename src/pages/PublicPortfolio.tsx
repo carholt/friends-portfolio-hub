@@ -20,7 +20,7 @@ interface Holding {
 type PublicPortfolioRow = Tables<"portfolios">;
 type HoldingRow = Tables<"holdings">;
 type AssetRow = Tables<"assets">;
-type PriceRow = Tables<"prices">;
+type PriceRow = Tables<"asset_prices">;
 
 export default function PublicPortfolio() {
   const { slug } = useParams<{ slug: string }>();
@@ -60,10 +60,10 @@ export default function PublicPortfolio() {
         const priceMap: Record<string, number> = {};
         if (assetIds.length > 0) {
           const { data: prices } = await supabase
-            .from("prices")
+            .from("asset_prices")
             .select("asset_id, price")
             .in("asset_id", assetIds)
-            .order("as_of_date", { ascending: false });
+            .order("price_date", { ascending: false });
           if (prices) {
             for (const pr of prices as Array<Pick<PriceRow, "asset_id" | "price">>) {
               if (!priceMap[pr.asset_id]) priceMap[pr.asset_id] = Number(pr.price);

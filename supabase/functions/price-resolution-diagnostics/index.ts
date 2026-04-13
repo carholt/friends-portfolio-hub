@@ -10,11 +10,10 @@ const normalize = (value: string) => value.trim().toUpperCase();
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-  const apiKey = Deno.env.get("TWELVE_DATA_API_KEY");
   const expectedToken = Deno.env.get("PRICE_DIAGNOSTIC_TOKEN");
   const incomingToken = req.headers.get("x-diagnostic-token");
 
-  if (!apiKey || !expectedToken) {
+  if (!expectedToken) {
     return new Response(JSON.stringify({ error: "Diagnostics are not configured" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 
@@ -30,8 +29,7 @@ Deno.serve(async (req) => {
         if (typeof entry === "string") return normalize(entry);
         if (entry && typeof entry === "object") {
           const symbol = normalize(String((entry as Record<string, unknown>).symbol || ""));
-          const exchange = normalize(String((entry as Record<string, unknown>).exchange || ""));
-          return exchange ? `${symbol}:${exchange}` : symbol;
+          return symbol;
         }
         return "";
       })
@@ -41,18 +39,19 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ results: [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const response = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${apiKey}`);
-    const data = await response.json();
+    const response = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(","))}`);
+    const data = await response.json() as { quoteResponse?: { result?: Array<{ symbol?: string; regularMarketPrice?: number }> } };
+    const map = new Map((data.quoteResponse?.result || []).map((item) => [normalize(String(item.symbol || "")), item]));
 
     const results = symbols.map((symbol) => {
-      const item = symbols.length === 1 ? data : data[symbol];
-      const price = Number(item?.price);
+      const item = map.get(symbol);
+      const price = Number(item?.regularMarketPrice);
       return {
         symbol,
         resolves: Number.isFinite(price) && price > 0,
         price: Number.isFinite(price) ? price : null,
-        status: item?.status || null,
-        message: item?.message || null,
+        status: response.ok ? "ok" : `http_${response.status}`,
+        message: null,
       };
     });
 

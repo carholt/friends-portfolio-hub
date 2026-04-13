@@ -5,14 +5,15 @@ import { resolve } from "node:path";
 describe("update-prices edge function", () => {
   const source = readFileSync(resolve(process.cwd(), "supabase/functions/update-prices/index.ts"), "utf8");
 
-  it("enforces 8 requests per second rate limiting", () => {
-    expect(source).toContain("MAX_CALLS_PER_SECOND = 8");
-    expect(source).toContain("API_DELAY_MS = Math.ceil(1000 / MAX_CALLS_PER_SECOND)");
+  it("uses Yahoo quote endpoint with batched requests", () => {
+    expect(source).toContain("query1.finance.yahoo.com/v7/finance/quote");
+    expect(source).toContain("YAHOO_BATCH_SIZE = 50");
   });
 
-  it("fetches all assets as the pricing source set", () => {
+  it("fetches assets including exchange for symbol normalization", () => {
     expect(source).toContain("from(\"assets\")");
-    expect(source).toContain("select(\"id,symbol,price_symbol,price_provider,currency\")");
+    expect(source).toContain("select(\"id,symbol,price_symbol,price_provider,currency,exchange\")");
+    expect(source).toContain("normalizeYahooSymbol(");
   });
 
   it("upserts asset_prices and refreshes portfolio valuations", () => {

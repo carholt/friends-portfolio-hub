@@ -7,8 +7,35 @@ export interface ResolveIsinBatchRow {
   error?: string;
 }
 
+const BATCH_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/resolve-isin-batch`;
+
 function normalizeIsin(isin: string) {
   return String(isin || "").trim().toUpperCase();
+}
+
+async function fetchIsinBatch(isins: string[]) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+
+  if (!token) {
+    throw new Error("No active session");
+  }
+
+  const res = await fetch(BATCH_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ isins }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Batch resolve failed: ${res.status}`);
+  }
+
+  return await res.json() as { results?: ResolveIsinBatchRow[] };
 }
 
 export async function resolveIsins(isins: string[]) {
@@ -18,28 +45,27 @@ export async function resolveIsins(isins: string[]) {
     return new Map<string, ResolveIsinBatchRow>();
   }
 
-  const { data, error } = await supabase
-    .from("instrument_mappings")
-    .select("isin,ticker,exchange")
-    .in("isin", unique);
-
   const map = new Map<string, ResolveIsinBatchRow>();
-  if (error) {
+
+  try {
+    const payload = await fetchIsinBatch(unique);
+    for (const row of payload.results || []) {
+      const isin = normalizeIsin(row.isin);
+      if (!isin) continue;
+      map.set(isin, {
+        isin,
+        ticker: row.ticker ? String(row.ticker).toUpperCase() : null,
+        exchange: row.exchange ? String(row.exchange).toUpperCase() : null,
+        error: row.error,
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "batch lookup failed";
     unique.forEach((isin) => {
-      map.set(isin, { isin, ticker: null, exchange: null, error: error.message || "local lookup failed" });
+      map.set(isin, { isin, ticker: null, exchange: null, error: message });
     });
     return map;
   }
-
-  (data || []).forEach((row: any) => {
-    const isin = normalizeIsin(row?.isin);
-    if (!isin) return;
-    map.set(isin, {
-      isin,
-      ticker: row?.ticker ? String(row.ticker).toUpperCase() : null,
-      exchange: row?.exchange ? String(row.exchange).toUpperCase() : null,
-    });
-  });
 
   unique.forEach((isin) => {
     if (!map.has(isin)) {
