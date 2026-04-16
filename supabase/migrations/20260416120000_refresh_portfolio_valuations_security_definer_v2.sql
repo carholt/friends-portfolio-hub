@@ -1,4 +1,4 @@
--- Ensure refresh_portfolio_valuations runs with elevated privileges and locked-down execute grants.
+-- Ensure refresh_portfolio_valuations runs with definer privileges and explicit backend grants.
 DO $migration$
 BEGIN
   EXECUTE $fn$
@@ -42,6 +42,5 @@ BEGIN
   EXECUTE 'ALTER FUNCTION public.refresh_portfolio_valuations() OWNER TO postgres';
   EXECUTE 'REVOKE EXECUTE ON FUNCTION public.refresh_portfolio_valuations() FROM PUBLIC';
   EXECUTE 'GRANT EXECUTE ON FUNCTION public.refresh_portfolio_valuations() TO service_role';
-  EXECUTE 'GRANT EXECUTE ON FUNCTION public.refresh_portfolio_valuations() TO authenticated';
 END
 $migration$;
